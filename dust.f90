@@ -1,0 +1,1341 @@
+subroutine calc_q_rec(SigmaD,smin, smax,qrec,Nr)
+    ! Subroutine calculates the power-law index of the size distribution
+    ! Parameters
+    ! ----------
+    ! SigmaD(Nr,2) : Dust surface densities
+    ! smin(Nr) : Minimal particle size
+    ! smax(Nr) : Maximum particle size
+    ! Nr : Number of radial grid cells
+    ! Returns
+    ! -------
+    ! qrec(Nr) : Calculated distribution exponent
+    implicit None
+    double precision, intent(in) :: SigmaD(Nr,2)
+    double precision, intent(in) :: smin(Nr)
+    double precision, intent(in) :: smax(Nr)
+    double precision, intent(out) :: qrec(Nr)
+    integer, intent(in) :: Nr
+
+    integer :: i
+
+    do i = 1, Nr
+        qrec(i) = 2.d0 * log(SigmaD(i,2)/SigmaD(i,1)) / &
+                 & log(smax(i)/smin(i)) - 4.0d0
+    end do
+end subroutine calc_q_rec
+
+subroutine calculate_a(smin, smax, q, fudge, a, Nr, Nm)
+    ! Subroutine calculates the particle sizes.
+    ! a = [a0, fudge * a1, a1, fudge * amax, amax]
+    !
+    ! This way this array can be passed to the dustpy function
+    ! that computes relative velocities.
+    !
+    ! Parameters
+    ! ----------
+    ! smin(Nr) : Minimal particle size
+    ! smax(Nr) : Maximum particle size
+    ! q(Nr) : Calculated distribution exponent
+    ! fudge : Fudge factor for vrel underlying smax evolution / fragmentation probability
+    ! Nr : Number of radial grid cells
+    ! Nm : Number of mass bins
+    !
+    ! Returns
+    ! -------
+    ! a(Nr, Nm) : Particle sizes
+
+    implicit None
+
+    double precision, intent(in) :: smin(Nr)
+    double precision, intent(in) :: smax(Nr)
+    double precision, intent(in) :: q(Nr)
+    double precision, intent(in) :: fudge
+    double precision, intent(out) :: a(Nr, Nm)
+    integer, intent(in) :: Nr
+    integer, intent(in) :: Nm
+
+    integer :: i
+    double precision :: sint(Nr)
+    double precision :: qp4(Nr)
+    double precision :: qp5(Nr)
+    double precision :: qp6(Nr)
+    double precision :: R1(Nr)
+    double precision :: dum
+
+    sint(:) = sqrt(smin(:) * smax(:))
+    qp4(:) = q(:) + 4.d0
+    qp5(:) = q(:) + 5.d0
+    qp6(:) = q(:) + 6.d0
+    R1(:) = qp4(:) / qp5(:)
+
+    !#TODO: assumes flux-average = mass-average; might need update for Stokes-drag regime
+
+    do i = 1, Nr
+        if(q(i) == -5.d0) then
+            a(i, 1) = sint(i) * smin(i) / (sint(i) - smin(i)) * log(sint(i) / smin(i))
+            a(i, 3) = smax(i) * sint(i) / (smax(i) - sint(i)) * log(smax(i) / sint(i))
+        else if(q(i) == -4.d0) then
+            a(i, 1) = (sint(i) - smin(i)) / log(sint(i) / smin(i))
+            a(i, 3) = (smax(i) - sint(i)) / log(smax(i) / sint(i))
+        else
+            dum = sqrt(smin(i) / smax(i))
+            a(i, 1) = R1(i) * sint(i) * (1.d0 - dum**qp5(i)) / (1.d0 - dum**qp4(i))
+            a(i, 3) = R1(i) * sint(i) * (dum**(-qp5(i)) - 1.d0) / (dum**(-qp4(i)) - 1.d0)
+        end if
+        a(i, 2) = fudge * a(i, 3)
+        a(i, 4) = fudge * smax(i)
+        a(i, 5) = smax(i)
+    end do
+
+end subroutine calculate_a
+
+
+subroutine fi_diff(D, SigmaD, SigmaG, St, u, r, ri, Fi, Nr, Nm_s)
+    ! Subroutine calculates the diffusive dust fluxes at the grid cell interfaces.
+    ! The flux at the boundaries is assumed to be constant.
+    !
+    ! **NOTE**: here Stokes number and Diffusivity should be
+    ! from a0 and a1 (mass average), so only a subset of the 5 size bins.
+    !
+    ! Parameters
+    ! ----------
+    ! D(Nr, Nm) : Dust diffusivity
+    ! SigmaD(Nr, Nm) : Dust surface densities
+    ! SigmaG(Nr) : Gas surface density
+    ! St(Nr, Nm) : Stokes number
+    ! u(Nr) : Gas turbulent RMS velocity
+    ! r(Nr) : Radial grid cell centers
+    ! ri(Nr+1) : Radial grid cell interfaces
+    ! Nr : Number of radial grid cells
+    ! Nm_s : Short number of mass bins
+    !
+    ! Returns
+    ! -------
+    ! Fi(Nr+1, Nm) : Diffusive fluxes at grid cell interfaces
+
+    implicit none
+
+    double precision, intent(in) :: D(Nr, Nm_s)
+    double precision, intent(in) :: SigmaD(Nr, Nm_s)
+    double precision, intent(in) :: SigmaG(Nr)
+    double precision, intent(in) :: St(Nr, Nm_s)
+    double precision, intent(in) :: u(Nr)
+    double precision, intent(in) :: r(Nr)
+    double precision, intent(in) :: ri(Nr + 1)
+    double precision, intent(out) :: Fi(Nr + 1, Nm_s)
+    integer, intent(in) :: Nr
+    integer, intent(in) :: Nm_s
+
+    double precision :: Di(Nr + 1, Nm_s)
+    double precision :: eps(Nr, Nm_s)
+    double precision :: gradepsi(Nr + 1, Nm_s)
+    double precision :: lambda
+    double precision :: P
+    double precision :: SigDi(Nr + 1, Nm_s)
+    double precision :: SigGi(Nr + 1)
+    double precision :: Sti(Nr + 1, Nm_s)
+    double precision :: ui(Nr + 1)
+    double precision :: w
+    integer :: ir
+    integer :: i
+
+    Fi(:, :) = 0.d0
+
+    call interp1d(ri, r, SigmaG, SigGi, Nr)
+    call interp1d(ri, r, u, ui, Nr)
+
+    do i = 1, Nm_s
+        call interp1d(ri(:), r(:), D(:, i), Di(:, i), Nr)
+        call interp1d(ri(:), r(:), SigmaD(:, i), SigDi(:, i), Nr)
+        eps(:, i) = SigmaD(:, i) / SigmaG(:)
+        call interp1d(ri(:), r(:), St(:, i), Sti(:, i), Nr)
+    end do
+
+    do ir = 2, Nr
+        gradepsi(ir, :) = (eps(ir, :) - eps(ir - 1, :)) / (r(ir) - r(ir - 1))
+    end do
+
+    do i = 1, Nm_s
+        do ir = 2, Nr
+            ! flux limiter:
+            ! w is maximum diffusive flux
+            ! Fi is the unlimted diffusive flux
+            ! lambda limits Fi to w
+            w = ui(ir) * SigDi(ir, i) / (1.d0 + Sti(ir, i)**2)
+            Fi(ir, i) = -Di(ir, i) * SigGi(ir) * gradepsi(ir, i)
+            P = abs(Fi(ir, i) / w)
+            lambda = (1.d0 + P) / (1.d0 + P + P**2)
+            if(lambda > HUGE(lambda)) then
+                Fi(ir, i) = w
+            else
+                Fi(ir, i) = lambda * Fi(ir, i)
+            end if
+        end do
+    end do
+
+    Fi(1, :) = Fi(2, :)
+    Fi(Nr + 1, :) = Fi(Nr, :)
+
+end subroutine fi_diff
+
+subroutine vrel_brownian_motion(cs, m, T, vrel, Nr, Nm)
+    ! Subroutine calculates the relative particle velocities due to Brownian motion.
+    ! Its maximum value is the sound speed.
+    !
+    ! Parameters
+    ! ----------
+    ! cs(Nr) : Sound speed
+    ! m(Nr, Nm) : Particle masses
+    ! T(Nr) : Temperature
+    ! Nr : Number of radial grid cells
+    ! Nm : Number of mass bins
+    !
+    ! Returns
+    ! -------
+    ! vrel(Nr, Nm, Nm) : Relative velocities
+
+    use constants, only : k_B, pi
+
+    implicit none
+
+    double precision, intent(in) :: cs(Nr)
+    double precision, intent(in) :: m(Nr, Nm)
+    double precision, intent(in) :: T(Nr)
+    double precision, intent(out) :: vrel(Nr, Nm, Nm)
+    integer, intent(in) :: Nr
+    integer, intent(in) :: Nm
+
+    integer :: ir, i, j
+    double precision :: fac1
+    double precision :: fac2(Nr)
+    double precision :: dum
+
+    fac1 = 8.d0 * k_B / pi
+
+    do ir = 1, Nr
+        fac2(ir) = fac1 * T(ir)
+    end do
+
+    do i = 1, Nm
+        do j = 1, i
+            do ir = 1, Nr
+                dum = min(sqrt(fac2(ir) * (m(ir, j) + m(ir, i)) / (m(ir, j) * m(ir, i))), cs(ir))
+                vrel(ir, j, i) = dum
+                vrel(ir, i, j) = dum
+            end do
+        end do
+    end do
+
+end subroutine vrel_brownian_motion
+
+subroutine calculate_m(a, rhos, fill, masses, Nr, Nm)
+    ! Subroutine calculates the particle masses.
+    !
+    ! Parameters
+    ! ----------
+    ! a(Nr, Nm) : Particle sizes
+    ! rhos(Nr, Nm) : Solid state density
+    ! fill(Nr, Nm) : Filling factor
+    ! Nr : Number of radial grid cells
+    ! Nm : Number of mass bins
+    !
+    ! Returns
+    ! -------
+    ! masses(Nr, Nm) : Particle masses
+
+    use constants, only : pi
+
+    implicit None
+
+    double precision, intent(in) :: a(Nr, Nm)
+    double precision, intent(in) :: rhos(Nr, Nm)
+    double precision, intent(out) :: masses(Nr, Nm)
+    integer, intent(in) :: Nr
+    integer, intent(in) :: Nm
+
+    integer :: i, j
+
+    do i = 1, Nr
+        do j = 1, Nm
+            masses(i, j) = 4.d0 / 3.d0 * pi * rhos(i, j)  * a(i, j)**3.d0
+        end do
+    end do
+
+end subroutine calculate_m
+
+
+subroutine pfrag(vrel, vfrag, pf, Nr)
+    ! Subroutine calculates the fragmentation probability.
+    !
+    ! Parameters
+    ! ----------
+    ! vrel(Nr) : total relative velocity between amax and 0.5 * amax
+    ! vfrag(Nr) : Fragmentation velocity
+    ! Nr : Number or radial grid cells
+    !
+    ! Returns
+    ! -------
+    ! pf(Nr) : Fragmentation probability in [0, 1]
+    !
+    ! Notes
+    ! -----
+    ! The sticking probability is ps = 1 - pf
+
+    implicit none
+
+    double precision, intent(in) :: vrel(Nr)
+    double precision, intent(in) :: vfrag(Nr)
+    double precision, intent(out) :: pf(Nr)
+    integer, intent(in) :: Nr
+    integer :: ir
+
+    do ir = 1, Nr
+        pf(ir) = exp(-(5.d0 * (min(vrel(ir) / vfrag(ir), 1d0) - 1d0))**2d0)
+    end do
+
+end subroutine pfrag
+
+subroutine qfrag(p_dr, dv_tot, vfrag, St_max, q_turb1, q_turb2, &
+    & q_drfr, alpha, SigmaGas, mump, q_frag, Nr)
+    ! Subroutine calculates the power-law in the fragmentation
+    ! regime, interpolating between different cases.
+    !
+    ! Note that the relative velocities passed to this subroutine
+    ! should be the ...[:, -1, -2] entry, i.e. the relative ... velocities
+    ! between a_max and half of a_max the drift component should also
+    ! include the radial and azimuthal contributions.
+    !
+    ! Parameters
+    ! ----------
+    ! p_dr : the transition function between turbulence and drift
+    ! dv_tot : the total relative velocities
+    ! vfrag : the fragmentation velocity
+    ! St_max : the maximum Stokes number
+    ! q_turb1 : the power-law exponent for fragmentation in the first turbulence regime
+    ! q_turb2 : same for the second turbulence regime
+    ! alpha : the turbulence parameter
+    ! SigmaGas : the gas surface density
+    ! mump : array of mean molecular mass (\mu * m_p)
+    ! q_drfr :  same if drift is causing fragmentation
+    ! Nr : Number or radial grid cells
+    !
+    ! Returns
+    ! -------
+    ! q_frag(Nr) : Fragmentation power-law
+    !
+    use constants, only : sigma_H2,pi
+    implicit none
+
+    double precision, intent(in) :: p_dr(Nr)
+    double precision, intent(in) :: dv_tot(Nr)
+    double precision, intent(in) :: vfrag(Nr)
+    double precision, intent(in) :: St_max(Nr)
+    double precision, intent(in) :: q_turb1, q_turb2, q_drfr
+    double precision, intent(in) :: alpha(Nr)
+    double precision, intent(in) :: SigmaGas(Nr)
+    double precision, intent(in) :: mump(Nr)
+    double precision, intent(out) :: q_frag(Nr)
+    integer, intent(in) :: Nr
+
+    double precision :: Re, f_t1t2, p_t1, p_frag, q_turbfrag
+
+    integer :: ir
+
+    do ir = 1, Nr
+        !This seems wrong with the paper
+        Re =  0.5d0 * alpha(ir) * SigmaGas(ir) * sigma_H2 / mump(ir)
+
+        ! Eq. A.1 of Pfeil+2024
+        f_t1t2 = 5d0 * sqrt(1.d0 / Re) / St_max(ir)
+        
+        ! Eq. A.2
+        p_t1 = 0.5d0 * (1d0 - (f_t1t2**4 - 1d0) / (f_t1t2**4 + 1d0))
+
+        ! Eq. A.5
+        p_frag = exp(-(5d0 * (min(dv_tot(ir) / vfrag(ir), 1d0) - 1d0))**2)
+
+        q_turbfrag = p_t1 * q_turb1 + (1d0 - p_t1) * q_turb2
+
+        q_frag(ir) = p_dr(ir) * q_drfr + (1d0 - p_dr(ir)) * q_turbfrag
+    end do
+
+end subroutine qfrag
+
+subroutine pfrag_trans( St_max, alpha, SigmaGas, mump, p_frag_trans, Nr)
+    ! Subroutine calculates the power-law in the fragmentation
+    ! regime, interpolating between different cases.
+    !
+    ! Note that the relative velocities passed to this subroutine
+    ! should be the ...[:, -1, -2] entry, i.e. the relative ... velocities
+    ! between a_max and half of a_max the drift component should also
+    ! include the radial and azimuthal contributions.
+    !
+    ! Parameters
+    ! ----------
+    ! St_max : the maximum Stokes number
+    ! alpha : the turbulence parameter
+    ! SigmaGas : the gas surface density
+    ! mump : array of mean molecular mass (\mu * m_p)
+    ! Nr : Number or radial grid cells
+    !
+    ! Returns
+    ! -------
+    ! p_frag_trans(Nr) : Fragmentation power-law
+    !
+    use constants, only : sigma_H2,pi
+    implicit none
+
+    double precision, intent(in) :: St_max(Nr)
+    double precision, intent(in) :: alpha(Nr)
+    double precision, intent(in) :: SigmaGas(Nr)
+    double precision, intent(in) :: mump(Nr)
+    double precision, intent(out) :: p_frag_trans(Nr)
+    integer, intent(in) :: Nr
+
+    double precision :: Re, f_t1t2
+
+    integer :: ir
+
+    do ir = 1, Nr
+        !This seems wrong with the paper
+        Re = 0.5d0 * alpha(ir) * SigmaGas(ir) * sigma_H2 / mump(ir)
+
+        ! Eq. A.1 of Pfeil+2024
+        f_t1t2 = 5d0 * sqrt(1.d0 / Re) / St_max(ir)
+        
+        ! Eq. A.2
+        p_frag_trans(ir) = 0.5d0 * (1d0 - (f_t1t2**4 - 1d0) / (f_t1t2**4 + 1d0))
+    end do
+
+end subroutine pfrag_trans
+
+subroutine pdriftfrag(dv_rad,dv_az, St_max, alpha, SigmaGas, mump, cs,p_frag_trans,p_driftfrag, Nr)
+    ! Subroutine calculates the tranistion form the fragmentation to the drif tfragmentation limit
+    !
+    ! Parameters
+    ! ----------
+    ! dv_rad(Nr) : Radial relative velocities
+    ! dv_az(Nr) : Azimuthal relative velocities
+    ! St_max(Nr) : the maximum Stokes number
+    ! alpha(Nr) : the turbulence parameter
+    ! SigmaGas(Nr) : the gas surface density
+    ! mump(Nr) : array of mean molecular mass (\mu * m_p)
+    ! cs(Nr) : sound speed
+    ! Nr : Number or radial grid cells
+    ! Returns
+    ! -------
+    ! p_frag_trans(Nr) : transition probability framgnetation to drift fragmentation
+
+    use constants, only : Sigma_H2
+    implicit none
+
+    double precision, intent(in) :: dv_rad(Nr)
+    double precision, intent(in) :: dv_az(Nr)
+    double precision, intent(in) :: St_max(Nr)
+    double precision, intent(in) :: alpha(Nr)
+    double precision, intent(in) :: SigmaGas(Nr)
+    double precision, intent(in) :: mump(Nr)
+    double precision, intent(in) :: cs(Nr)
+    double precision, intent(in) :: p_frag_trans(Nr)
+    double precision, intent(out) :: p_driftfrag(Nr)
+    integer, intent(in) :: Nr
+
+
+    !local variables
+    double precision :: dv_drmax
+    double precision :: St_mx, St_mn
+    double precision :: Re
+    double precision :: vgas, vsmall, vinter, v_tr_s, f_dt
+    integer :: ir 
+
+
+    do ir = 1 , Nr
+        dv_drmax = max((dv_rad(ir)**2 + dv_az(ir)**2)**0.5d0, 1d-10)
+        st_mx = St_max(ir)
+        St_mn = 0.5d0 * St_max(ir)
+        Re = 0.5d0 * alpha(ir) * SigmaGas(ir) * sigma_H2 / mump(ir)
+        vgas = sqrt(1.5d0*alpha(ir)) *cs(ir)
+        vsmall   = vgas * ((st_mx-st_mn)/(st_mx+st_mn) * (st_mx**2./(st_mx+Re**(-0.5d0)) - st_mn**2./(st_mn+Re**(-0.5d0))))**0.5d0
+        vinter   = vgas * (2.292d0*st_mx)**0.5d0
+        v_tr_s = p_frag_trans(ir)*vinter + (1.-p_frag_trans(ir))*vsmall
+
+        f_dt = 0.3d0*v_tr_s/dv_drmax
+        p_driftfrag(ir) =  0.5d0 + 0.5d0 * ((1.0d0 - f_dt**6) / (f_dt**6 + 1.0d0))
+        if(p_driftfrag(ir) .ne. p_driftfrag(ir)) p_driftfrag(ir) = 0.0d0
+    enddo 
+
+end subroutine pdriftfrag
+
+
+subroutine jacobian_coagulation_generator(sig, dv, H, m, Sigma, smin, smax, qeff, dat, row, col, Nr, Nm)
+    ! Subroutine calculates the coagulation Jacobian at every radial grid cell except for the boundaries.
+    !
+    ! Parameters
+    ! ----------
+    ! sig(Nr, Nm) : collisional cross sections of (a0 and a1) and (a1 and fudge * a1)
+    ! dv(Nr, Nm) : Relative velocities of (a0 and a1) and (a1 and fudge * a1)
+    ! H(Nr, Nm) : Dust scale heights, of a0 and a1
+    ! m(Nr, Nm) : Particle masses of a0 and a1
+    ! Sigma(Nr, Nm) : Dust surface densities
+    ! smin(Nr) : Minimum particle size
+    ! smax(Nr) : Maximum particle size
+    ! qeff(Nr) : size distribution exponent (computed from qturb1, ...)
+    ! Nr : Number of radial grid cells
+    ! Nm : Number of sizes, should be 2
+    !
+    ! Returns
+    ! -------
+    ! dat((Nr-2)*Nm*Nm) : Non-zero elements of Jacobian
+    ! row((Nr-2)*Nm*Nm) : row location of non-zero elements
+    ! col((Nr-2)*Nm*Nm) : column location of non-zero elements
+
+    use constants, only : pi
+
+    implicit none
+
+    double precision, intent(in) :: sig(Nr, Nm)
+    double precision, intent(in) :: dv(Nr, Nm)
+    double precision, intent(in) :: H(Nr, Nm)
+    double precision, intent(in) :: m(Nr, Nm)
+    double precision, intent(in) :: Sigma(Nr, Nm)
+    double precision, intent(in) :: smin(Nr)
+    double precision, intent(in) :: smax(Nr)
+    double precision, intent(in) :: qeff(Nr)
+    double precision, intent(out) :: dat((Nr - 2) * Nm * Nm)
+    integer, intent(out) :: row((Nr - 2) * Nm * Nm)
+    integer, intent(out) :: col((Nr - 2) * Nm * Nm)
+    integer, intent(in) :: Nr
+    integer, intent(in) :: Nm
+
+    double precision :: C1(Nr)
+    double precision :: C2(Nr)
+    double precision :: F(Nr)
+    double precision :: jac(Nr, Nm, Nm)
+    double precision :: M1(Nr)
+    double precision :: M2(Nr)
+    double precision :: sint(Nr)
+
+    integer :: ir
+    integer :: i
+    integer :: j
+    integer :: k
+    integer :: start
+
+
+    ! Initialization
+    jac(:, :, :) = 0.d0
+    dat(:) = 0.d0
+    row(:) = 0
+    col(:) = 0
+
+    sint(:) = SQRT(smin(:) * smax(:))
+
+    ! here collisions between large and small dust use a0 and a1
+    ! which corresponds to a(1, 3) in the full size array (with helper sizes).
+    F(:) = H(:, 2) * SQRT(2.d0 / (H(:, 1)**2 + H(:, 2)**2)) &
+            & * sig(:, 1) / sig(:, 2) * dv(:, 1) / dv(:, 2) &
+            & * (smax(:) / sint(:))**(-qeff(:) - 4.d0)
+
+    C1(:) = sig(:, 1) * dv(:, 1) / (m(:, 2) * SQRT(2.d0 * pi * (H(:, 1)**2 + H(:, 2)**2)))
+    C2(:) = sig(:, 2) * dv(:, 2) * F(:) / (2.d0 * m(:, 2) * SQRT(pi) * H(:, 2))
+    !Jacobian of source term
+    M1(:) = -C1(:) * Sigma(:, 2)
+    M2(:) = -C2(:) * Sigma(:, 2)
+
+    ! Filling the grid cell Jacobian
+    jac(:, 1, 1) = M1(:)
+    jac(:, 1, 2) = -M2(:)
+    jac(:, 2, 1) = -M1(:)
+    jac(:, 2, 2) = M2(:)
+
+    ! Filling the data array
+    k = 1
+    do ir = 2, Nr - 1
+        if(dv(ir, 1) == 0.d0 .or. dv(ir,2) == 0d0) then
+            jac(ir, 1, 1) = 0.d0
+            jac(ir, 1, 2) = 0.d0
+            jac(ir, 2, 1) = 0.d0
+            jac(ir, 2, 2) = 0.d0
+        end if
+        start = (ir - 1) * Nm - 1
+        do i = 1, Nm
+            do j = 1, Nm
+                dat(k) = jac(ir, i, j)
+                row(k) = start + i
+                col(k) = start + j
+                k = k + 1
+            end do
+        end do
+    end do
+
+end subroutine jacobian_coagulation_generator
+
+subroutine s_coag(sig, dv, H, m, Sigma, smin, smax, qeff,Sigmin, S, Nr, Nm)
+    ! Subroutine calculates the coagulation source terms.
+    !
+    ! Parameters
+    ! ----------
+    ! sig(Nr, Nm) : collisional cross sections of (a0 and a1) and (a1 and fudge * a1)
+    ! dv(Nr, Nm) : Relative velocities of (a0 and a1) and (a1 and fudge * a1)
+    ! H(Nr, Nm) : Dust scale heights, of a0 and a1
+    ! m(Nr, Nm) : Particle masses of a0 and a1
+    ! Sigma(Nr, Nm) : Dust surface densities
+    ! smin(Nr) : Minimum particle size
+    ! smax(Nr) : Maximum particle size
+    ! qeff(Nr) : size distribution exponent (computed from qturb1, ...)
+    ! Sigmin(Nr, Nm) : Dust surface densities
+    ! Nr : Number of radial grid cells
+    ! Nm : Number of mass bins (only a0 and a1)
+    !
+    ! Returns
+    ! -------
+    ! S(Nr, Nm) : Coagulation source terms
+
+    use constants, only : pi
+
+    implicit none
+
+    double precision, intent(in) :: sig(Nr, Nm)
+    double precision, intent(in) :: dv(Nr, Nm)
+    double precision, intent(in) :: H(Nr, Nm)
+    double precision, intent(in) :: m(Nr, Nm)
+    double precision, intent(in) :: Sigma(Nr, Nm)
+    double precision, intent(in) :: smin(Nr)
+    double precision, intent(in) :: smax(Nr)
+    double precision, intent(in) :: qeff(Nr)
+    double precision, intent(in) :: Sigmin(Nr, Nm)
+    double precision, intent(out) :: S(Nr, Nm)
+    integer, intent(in) :: Nr
+    integer, intent(in) :: Nm
+
+    double precision :: dot01(Nr)
+    double precision :: dot10(Nr)
+    double precision :: F(Nr)
+    double precision :: sint(Nr)
+
+    ! Initialization
+    S(:, :) = 0.d0
+
+    sint(:) = sqrt(smin(:) * smax(:))
+
+    ! here collisions between large and small dust use a0 and a1
+    ! which corresponds to a(1, 3) in the full size array (with helper sizes).
+    F(:) = H(:, 2) * SQRT(2.d0 / (H(:, 1)**2 + H(:, 2)**2)) &
+            & * sig(:, 1) / sig(:, 2) * dv(:, 1) / dv(:, 2) &
+            & * (smax(:) / sint(:))**(-qeff(:) - 4.d0)
+
+
+    dot01(:) = Sigma(:, 1) * Sigma(:, 2) * sig(:, 1) * dv(:, 1) / (m(:, 2) * SQRT(2.d0 * pi * (H(:, 1)**2 + H(:, 2)**2)))
+    dot10(:) = Sigma(:, 2)**2 * sig(:, 2) * dv(:, 2) * F(:) / (2.d0 * m(:, 2) * SQRT(pi) * H(:, 2))
+
+    where(sum(Sigma, dim=2) .gt. sum(Sigmin, dim=2) .and. dv(:, 1) .gt. 0.d0 .and. dv(:, 2) .gt. 0.d0)
+        S(:, 1) = dot10(:) - dot01(:)
+        S(:, 2) = -S(:, 1)
+    elsewhere
+        S(:, 1) = 0.d0
+        S(:, 2) = 0.d0
+    end where
+
+end subroutine s_coag
+
+
+subroutine smax_deriv(dv, rhod, rhos, smin, smax, vfrag, Sigma, SigmaFloor, &
+        & dsmax, Nr, Nm)
+    ! Subroutine calculates the derivative of the maximum particle size
+    !
+    ! Parameters
+    ! ----------
+    ! dv(Nr) : Relative velocities of 0.5 amax and amax
+    ! rhod(Nr) : Dust midplane volume densities
+    ! rhos(Nr) : Particle bulk densities
+    ! smin(Nr) : Minimum particle size
+    ! smax(Nr) : Maximum particle size
+    ! vfrag(Nr) : Fragmentation velocity
+    ! Sigma(Nr, Nm) : Dust surface density
+    ! SigmaFloor(Nr, Nm) : Floor value of dust surface density
+    ! Nr : Number of radial grid cells
+    ! Nm : Number of mass bins (only a0 and a1)
+    !
+    ! Returns
+    ! -------
+    ! dsmax(Nr) : derivative of smax
+
+    implicit none
+
+    double precision, intent(in) :: dv(Nr)
+    double precision, intent(in) :: rhod(Nr)
+    double precision, intent(in) :: rhos(Nr)
+    double precision, intent(in) :: smin(Nr)
+    double precision, intent(in) :: smax(Nr)
+    double precision, intent(in) :: vfrag(Nr)
+    double precision, intent(in) :: Sigma(Nr, Nm)
+    double precision, intent(in) :: SigmaFloor(Nr, Nm)
+    double precision, intent(out) :: dsmax(Nr)
+    integer, intent(in) :: Nr
+    integer, intent(in) :: Nm
+
+    integer :: ir
+
+    double precision :: A
+    double precision :: B
+    double precision :: f
+    double precision :: thr
+
+    ! Initialization
+    dsmax(:) = 0.d0
+
+    do ir = 2, Nr - 1
+
+        ! Prevents unwanted growth of smax
+        if ( (Sigma(ir, 1) .lt. SigmaFloor(ir, 1)) .or. (Sigma(ir, 2) .lt. SigmaFloor(ir, 2))) then
+            dsmax(ir) = 0.d0
+        else
+
+            A = (dv(ir) / vfrag(ir)) ** 3
+            B = (1.d0 - A) / (1.d0 + A)
+            !B = 1.0d0 - 2.0d0 / (1.d0 + (vfrag(ir)/dv(ir))**3.d0)
+            dsmax(ir) = rhod(ir) / rhos(ir) * dv(ir) * B
+
+            ! limiter to stall negative growth near the lower size limit
+            if (dsmax(ir) < 0.d0) then
+                ! Factor 1.5 to ensure minimal distribution width
+                thr = 1.5d0 * smin(ir)
+                f = 0.5d0 * (1.d0 + TANH(LOG10(smax(ir) / thr) / 3.d-2))
+                if(smax(ir) <= smin(ir)) f = 0.d0
+                dsmax(ir) = f * dsmax(ir)
+            end if
+
+        end if
+
+    end do
+
+end subroutine smax_deriv
+
+
+subroutine dadsig(alim, q,  f_crit, amax,amin, Sig, dadsig1, nr, nm)
+    ! Subroutine calculates the shrinkage source term.
+    !
+    ! Parameters
+    ! ----------
+    ! dt : time scale of shinakge for each radius
+    ! slim : limiting size for shrinkage
+    ! f_crit : mass fraction below which Sig1 should not drop
+    ! smax : Maximum particle size
+    ! Sig : Dust surface densities
+    ! Nr : Number of radial grid cells
+    !
+    ! Returns
+    ! -------
+    ! sdot(Nr) : Shrinkage source term
+
+    implicit none
+
+    double precision, intent(in) :: alim
+    double precision, intent(in) :: q(Nr)
+    double precision, intent(in) :: f_crit
+    double precision, intent(in) :: amax(Nr)
+    double precision, intent(in) :: amin(Nr)
+    double precision, intent(in) :: Sig(Nr, Nm)
+    double precision, intent(out) :: dadsig1(Nr)
+
+    double precision :: Sig_crit(Nr)
+    double precision :: Sig_tot(Nr)
+    double precision :: dsig1dt(Nr)
+    double precision :: sdot_max(Nr)
+    double precision :: xi(Nr)
+    double precision :: dum1(Nr)
+    double precision :: dsig1da(Nr)
+
+    integer, intent(in) :: Nr, Nm
+    xi = q + 4d0    
+    dum1 = (amax * amin)**(0.5*xi)
+    Sig_tot = Sig(:, 1) + Sig(:, 2)
+    Sig_crit = f_crit * (Sig(:, 1) + Sig(:, 2))
+ 
+    dsig1dt = 0d0
+    dsig1da = 0d0
+
+
+    where (xi .eq. 0d0 .or. Sig(:, 2) .ge. Sig_crit .or. amax .le. alim)
+        dsig1da = 0.0d0
+    elsewhere
+        dsig1da = abs(sig_tot * xi * (0.5d0 * amin**xi * dum1 + amax**xi * (0.5d0 * (dum1 - amin**xi))) &
+        / (amax * (amax**xi - amin**xi)**2))
+    end where
+
+    where (dsig1da .ne. dsig1da)
+        dsig1da = 0d0
+    end where
+
+    where(dsig1da .ne. 0d0)
+        dadsig1 = -1./dsig1da
+    elsewhere
+        dadsig1 = 0d0
+    end where
+
+end subroutine dadsig
+
+subroutine dsigda(alim, q,  f_crit, amax,amin, Sig, dsig1da, nr, nm)
+    ! Subroutine calculates the shrinkage source term.
+    !
+    ! Parameters
+    ! ----------
+    ! dt : time scale of shinakge for each radius
+    ! slim : limiting size for shrinkage
+    ! f_crit : mass fraction below which Sig1 should not drop
+    ! smax : Maximum particle size
+    ! Sig : Dust surface densities
+    ! Nr : Number of radial grid cells
+    !
+    ! Returns
+    ! -------
+    ! sdot(Nr) : Shrinkage source term
+
+    implicit none
+
+    double precision, intent(in) :: alim
+    double precision, intent(in) :: q(Nr)
+    double precision, intent(in) :: f_crit
+    double precision, intent(in) :: amax(Nr)
+    double precision, intent(in) :: amin(Nr)
+    double precision, intent(in) :: Sig(Nr, Nm)
+    double precision, intent(out) :: dsig1da(Nr)
+    integer, intent(in) :: Nr, Nm
+
+    double precision :: Sig_crit(Nr)
+    double precision :: Sig_tot(Nr)
+    double precision :: dsig1dt(Nr)
+    double precision :: sdot_max(Nr)
+    double precision :: xi(Nr)
+    double precision :: dum1(Nr)
+
+
+
+    xi = q + 4d0    
+    dum1 = (amax * amin)**(0.5*xi)
+    Sig_tot = Sig(:, 1) + Sig(:, 2)
+    Sig_crit = f_crit * (Sig(:, 1) + Sig(:, 2))
+ 
+    dsig1da = 0d0
+
+
+    where (xi .eq. 0d0 .or. amax .le. alim)
+        dsig1da = 0.0d0
+    elsewhere
+        dsig1da = (sig_tot * xi * (0.5d0 * amin**xi * dum1 + amax**xi * (0.5d0 * (dum1 - amin**xi))) &
+        / (amax * (amax**xi - amin**xi)**2))
+    end where
+
+    where (dsig1da .ne. dsig1da)
+        dsig1da = 0d0
+    end where
+
+
+end subroutine dsigda
+
+subroutine fi_diff_no_limit(D, SigmaD, SigmaG, St, u, r, ri, Fi, Nr, Nm)
+    ! Subroutine calculates the diffusive dust fluxes at the grid cell interfaces.
+    ! The flux at the boundaries is assumed to be constant.
+    !
+    ! Parameters
+    ! ----------
+    ! D(Nr, Nm) : Dust diffusivity
+    ! SigmaD(Nr, Nm) : Dust surface densities
+    ! SigmaG(Nr) : Gas surface density
+    ! St(Nr, Nm) : Stokes number
+    ! u(Nr) : Gas turbulent RMS velocity
+    ! r(Nr) : Radial grid cell centers
+    ! ri(Nr+1) : Radial grid cell interfaces
+    ! Nr : Number of radial grid cells
+    ! Nm : Number of mass bins
+    !
+    ! Returns
+    ! -------
+    ! Fi(Nr+1, Nm) : Diffusive fluxes at grid cell interfaces
+  
+  
+    implicit none
+  
+    double precision, intent(in)  :: D(Nr, Nm)
+    double precision, intent(in)  :: SigmaD(Nr, Nm)
+    double precision, intent(in)  :: SigmaG(Nr)
+    double precision, intent(in)  :: St(Nr, Nm)
+    double precision, intent(in)  :: u(Nr)
+    double precision, intent(in)  :: r(Nr)
+    double precision, intent(in)  :: ri(Nr+1)
+    double precision, intent(out) :: Fi(Nr+1, Nm)
+    integer,          intent(in)  :: Nr
+    integer,          intent(in)  :: Nm
+  
+    double precision :: Di(Nr+1, Nm)
+    double precision :: eps(Nr, Nm)
+    double precision :: gradepsi(Nr+1, Nm)
+    double precision :: SigDi(Nr+1, Nm)
+    double precision :: SigGi(Nr+1)
+    double precision :: Sti(Nr+1, Nm)
+    integer :: ir
+    integer :: i
+  
+    Fi(:, :) = 0.d0
+  
+    call interp1d(ri, r, SigmaG, SigGi, Nr)
+  
+    do i=1, Nm
+      call interp1d(ri(:), r(:), D(:, i), Di(:, i), Nr)
+      call interp1d(ri(:), r(:), SigmaD(:, i), SigDi(:, i), Nr)
+      eps(:, i) = SigmaD(:, i) / SigmaG(:)
+      call interp1d(ri(:), r(:), St(:, i), Sti(:, i), Nr)
+    end do
+  
+    do ir=2, Nr
+      gradepsi(ir, :) = ( eps(ir, :) - eps(ir-1, :) ) / ( r(ir) - r(ir-1) )
+    end do
+  
+    do i=1, Nm
+        do ir=2, Nr
+            Fi(ir, i) = -Di(ir, i) * SigGi(ir) * gradepsi(ir, i)
+        enddo
+    end do
+  
+    Fi(   1, :) = Fi( 2, :)
+    Fi(Nr+1, :) = Fi(Nr, :)
+  
+  end subroutine fi_diff_no_limit
+
+  subroutine dt_sigma(Sigma,S_tot, s, f_crit, Nr, Nm, dt)
+    ! Subroutine calculates the timestep constraint from coagulation and shrinkage.
+    !
+    ! Parameters
+    ! ----------
+    ! Sigma(Nr, Nm) : Dust surface densities
+    ! S_tot(Nr, Nm) : Total source terms
+    ! s(Nr) : Particle sizes
+    ! f_crit : mass fraction below which Sig1 should not drop
+    ! Nr : Number of radial grid cells
+    ! Nm : Number of mass bins
+    !
+    ! Returns
+    ! -------
+    ! dt : Timestep constraint
+
+    implicit none
+
+    double precision, intent(in) :: Sigma(Nr, Nm)
+    double precision, intent(in) :: S_tot(Nr, Nm)
+    double precision, intent(in) :: s(Nr)
+    double precision, intent(in) :: f_crit
+    integer, intent(in) :: Nr
+    integer, intent(in) :: Nm
+    double precision, intent(out) :: dt
+
+    integer :: ir
+
+    do ir = 2, Nr - 1
+        if (Sigma(ir, 1) .lt. 1e-20 .and. Sigma(ir, 2) .lt. 1e-20) then
+            S_tot(ir, :) = 0.d0
+        end if
+    end do
+
+
+
+  end subroutine dt_sigma
+
+  subroutine calc_v_rel(a_tri,v_rel,P_grad,rho_g,cs,omega,vrgas,alpha,Re,rhos,mu,Nr,Nm_l)
+    double precision, intent(in) :: a_tri(Nr,Nm_l)
+    double precision, intent(in) :: P_grad(Nr)
+    double precision, intent(in) :: rho_g(Nr)
+    double precision, intent(in) :: cs(Nr)
+    double precision, intent(in) :: omega(Nr)
+    double precision, intent(in) :: vrgas(Nr)
+    double precision, intent(in) :: alpha(Nr)
+    double precision, intent(in) :: Re(Nr)
+    double precision, intent(in) :: rhos(Nr)
+    double precision, intent(in) :: mu(Nr)
+
+    double precision, intent(out) :: v_rel(Nr,Nm_l,Nm_l)
+
+    integer, intent(in) :: Nr
+    integer, intent(in) :: Nm_l
+    !local variables 
+    integer :: irax,i,j 
+    double precision :: dv_turb,dv_rad,dv_azi,dv_vert,dv_brow,dv_tot
+    do irad = 1, Nr 
+        do i=1, Nm_l
+            do j=1, i
+                call dv_tot(a_tri(irad,i),a_tri(irad,j),P_grad,rhog,cs,omega,vrgas,alpha,Re,rhos,mu,dv_turb,dv_rad,dv_azi,dv_vert,dv_brow)
+                dv_tot = sqrt(dv_turb**2 + d_rad**2 + dv_azi**2 + dv_vert**2 + dv_brow**2)
+                v_rel(irad,i,j) = dv_tot
+                v_rel(irad,j,i) = dv_tot
+            enddo 
+        enddo 
+    enddo
+
+
+  end subroutine
+
+
+subroutine jacobian_hydrodynamic_generator(area, D, r, ri, SigmaGas, v, A, B, C, Nr, Nm)
+  ! Subroutine calculates the diagonals of the hydrodynamic dust Jacobian.
+  !
+  ! Parameters
+  ! ----------
+  ! area(Nr) : Radial grid annulus area
+  ! D(Nr, Nm) : Dust diffusivity
+  ! r(Nr) : Radial grid cell centers
+  ! ri(Nr+1) : Radial grid cell interfaces
+  ! SigmaGas(Nr) : Gas surface density
+  ! v(Nr) : Radial velocity
+  ! Nr : Number of radial grid cells
+  ! Nm : Number of mass bins
+  !
+  ! Returns
+  ! -------
+  ! A(Nr) : sub-diagonal, A(1) not used
+  ! B(Nr) : diagonal
+  ! C(Nr) : super-diagoanl, C(Nr) not used
+
+  use unitsPL, only: pi 
+
+  implicit none
+
+  double precision, intent(in)  :: area(Nr)
+  double precision, intent(in)  :: D(Nr, Nm)
+  double precision, intent(in)  :: r(Nr)
+  double precision, intent(in)  :: ri(Nr+1)
+  double precision, intent(in)  :: v(Nr, Nm)
+  double precision, intent(in)  :: SigmaGas(Nr)
+  double precision, intent(out) :: A(Nr, Nm)
+  double precision, intent(out) :: B(Nr, Nm)
+  double precision, intent(out) :: C(Nr, Nm)
+  integer,          intent(in)  :: Nr
+  integer,          intent(in)  :: Nm
+
+  integer :: ir
+  integer :: i
+  double precision :: Di(Nr+1)
+  double precision :: h(Nr)
+  double precision :: hi(Nr+1)
+  double precision :: vi(Nr+1)
+  double precision :: vim(Nr+1)
+  double precision :: vip(Nr+1)
+  double precision :: Vinv(Nr)
+  double precision :: w(Nr)
+
+  ! Helper quantity
+  h(:) = SigmaGas(:) * r(:)
+  call interp1d(ri, r, h, hi, Nr)
+
+  ! Initialization
+  A(:, :)    = 0.d0
+  B(:, :)    = 0.d0
+  C(:, :)    = 0.d0
+  Vinv(:)    = 0.d0
+  w(:)       = 1.d0
+
+  ! Grid cell volumes and distances
+  do ir=1, Nr-1
+      Vinv(ir) = 2.*pi / area(ir)
+      w(ir) = r(ir+1) - r(ir)
+  end do
+
+  do i=1, Nm
+
+    ! Interface velocities
+    call interp1d(ri, r, v(:, i), vi, Nr)
+    vim(:)  = min(vi(:), 0.d0)
+    vip(:)  = max(0.d0, vi(:))
+    ! Interface diffusivity
+    call interp1d(ri, r, D(:, i), Di, Nr)
+
+    do ir=2, Nr-1
+
+      ! Advection terms
+      A(ir, i) = A(ir, i) + vip(ir)   * r(ir-1)
+      B(ir, i) = B(ir, i) - vip(ir+1) * r(ir)   + vim(ir)   * r(ir)
+      C(ir, i) = C(ir, i)                       - vim(ir+1) * r(ir+1)
+
+      ! Diffusion terms
+      A(ir, i) = A(ir, i) + Di(ir)   * hi(ir)   / ( w(ir-1) * h(ir-1) ) * r(ir-1)
+      B(ir, i) = B(ir, i) - Di(ir)   * hi(ir)   / ( w(ir-1) * h(ir)   ) * r(ir)
+      B(ir, i) = B(ir, i) - Di(ir+1) * hi(ir+1) / ( w(ir)   * h(ir)   ) * r(ir)
+      C(ir, i) = C(ir, i) + Di(ir+1) * hi(ir+1) / ( w(ir)   * h(ir+1) ) * r(ir+1)
+        
+    end do
+
+    ! Dividing by grid cell volume
+    A(:, i) = A(:, i) * Vinv(:)
+    B(:, i) = B(:, i) * Vinv(:)
+    C(:, i) = C(:, i) * Vinv(:)
+
+  end do
+
+end subroutine jacobian_hydrodynamic_generator
+
+
+  subroutine Jacobian()
+
+
+    call jacobian_coagulation_generator()
+    call jacobian_hydrodynamic_generators()
+
+    ! construct boundaries 
+
+    !Make full sparce matrix 
+
+  end subroutine
+
+  subroutine st_epstein_stokes1(a, mfp, rho, Sigma, St, Nr, Nm)
+  ! Subroutine calculates the Stokes number using the Epstein and the
+  ! Stokes I drag regimes.
+  !
+  ! Parameters
+  ! ----------
+  ! a(Nr, Nm) : Particle sizes
+  ! mfp(Nr) : Mean free path of gas
+  ! rho(Nr, Nm) : Particle bulk density
+  ! Sigma(Nr) : Gas surface density
+  ! Nr : Number of radial grid points
+  ! Nm : Number of mass bins
+  !
+  ! Returns
+  ! -------
+  ! St(Nr, Nm) : Stokes number
+
+  use constants, only: pi
+
+  implicit none
+
+  double precision, intent(in)  :: a(Nr, Nm)
+  double precision, intent(in)  :: mfp(Nr)
+  double precision, intent(in)  :: rho(Nr, Nm)
+  double precision, intent(in)  :: Sigma(Nr)
+  double precision, intent(out) :: St(Nr, Nm)
+  integer,          intent(in)  :: Nr
+  integer,          intent(in)  :: Nm
+
+  integer :: i
+  integer :: ir
+  double precision :: twoninth = 2.d0/9.d0
+
+  do ir=1, Nr
+    do i=1, Nm
+      if (a(ir, i) .LT. 2.25d0 * mfp(ir)) then
+        St(ir, i) = 0.5d0 * pi * a(ir, i) * rho(ir, i) / Sigma(ir)
+      else
+        St(ir, i) = twoninth * pi * a(ir, i)**2 * rho(ir, i) / (mfp(ir) * Sigma(ir))
+      end if
+    end do
+  end do
+
+end subroutine st_epstein_stokes1
+
+subroutine h_dubrulle1995(Hp, St, delta, h, Nr, Nm)
+  ! Subroutine calculates the particle scale height according Dubrulle et al. (1995).
+  !
+  ! Parameters
+  ! ----------
+  ! Hp(Nr) : Gas pressure scale heights
+  ! St(Nr, Nm) : Stokes number
+  ! delta(Nr) : vertical mixing parameter
+  ! Nr : Number of radial grid cells
+  ! Nm : Number of mass bins
+  !
+  ! Returns
+  ! -------
+  ! h(Nr, Nm) : Dust scale heights
+
+  implicit none
+
+  double precision, intent(in)  :: Hp(Nr)
+  double precision, intent(in)  :: St(Nr, Nm)
+  double precision, intent(in)  :: delta(Nr)
+  double precision, intent(out) :: h(Nr, Nm)
+  integer,          intent(in)  :: Nr
+  integer,          intent(in)  :: Nm
+
+  integer :: i
+
+  do i=1, Nm
+    h(:, i) = min(Hp(:) / sqrt(1.d0 + St(:, i)/delta(:)), Hp(:))
+  end do
+
+end subroutine h_dubrulle1995
+
+subroutine d(v2, OmegaK, St, Diff, Nr, Nm)
+  ! Subroutine calculates the dust diffusivity.
+  !
+  ! Parameters
+  ! ----------
+  ! v2(Nr) : turbulent gas RMS velocity
+  ! OmegaK(Nr) : Keplerian frequency
+  ! St(Nr, Nm) : Stokes number
+  ! Nr : Number of radial grid cells
+  ! Nm : Number of mass bins
+  !
+  ! Returns
+  ! -------
+  ! Diff(Nr, Nm) : Dust diffusivity
+
+  implicit none
+
+  double precision, intent(in)  :: v2(Nr)
+  double precision, intent(in)  :: OmegaK(Nr)
+  double precision, intent(in)  :: St(Nr, Nm)
+  double precision, intent(out) :: Diff(Nr, Nm)
+  integer,          intent(in)  :: Nr
+  integer,          intent(in)  :: Nm
+
+  integer :: i
+
+  do i=1, Nm
+    Diff(:, i) = v2(:) / ( OmegaK(:) * (1.d0 + St(:, i)**2) )
+  end do
+
+end subroutine d
+
+subroutine calc_q_eff(vrel,dv_r,dv_az,v_frag,St_max,alpha,Sigma,mu,q_eff,Nr)
+    integer, intent(in) :: Nr
+    double precision,dimension(Nr), intent(in) :: vrel
+    double precision,dimension(Nr), intent(in) :: dv_r
+    double precision,dimension(Nr), intent(in) :: dv_az
+    double precision,dimension(Nr), intent(in) :: v_frag
+    double precision,dimension(Nr), intent(in) :: St_max
+    double precision,dimension(Nr), intent(in) :: alpha
+    double precision,dimension(Nr), intent(in) :: Sigma
+    double precision,dimension(Nr), intent(in) :: mu
+    double precision,dimension(Nr), intent(out) :: q_eff
+
+    !local variables
+    integer :: ir
+    double precision, dimension(Nr) :: q_frag,p_frag,q_sweep,p_driftfrag,p_frag_trans,dv_rad,dv_az
+    double precision, parameter :: q_turb1 = -3.5d0
+    double precision, parameter :: q_turb2 = -3.75d0
+    double precision, parameter :: q_drfr  = -3.75d0
+    double p
+
+
+    call pfrag(vrel,v_frag,p_frag,Nr)
+    call p_frag_trans(St_max,alpha,Sigma,mu,p_frag_trans,Nr)
+    call pdriftfrag(dv_r,dv_az,St_max,alpha,Sigma,mu,cs,p_frag_trans,p_driftfrag,Nr)
+    call qfrag(p_driftfrag,vrel,v_frag,St_max,q_turb1,q_turb2,q_drfr,alpha,Sigma,muq_frag,Nr)
+
+    !calculate the target power-law exponent
+    q_eff = p_frag * q_frag + (1.d0 - p_frag) * q_sweep
+end subroutine
+
+
+!!! 
+! Dustpy subroutines end here
+!!!
+
+subroutine vrel_azimuthal_drift(vdriftmax, St, vrel, Nr, Nm)
+  ! Subroutine calculates the relative particle velocities due to azimuthal drift.
+  !
+  ! Parameters
+  ! ----------
+  ! vdriftmax(Nr) : Maximum drift velocity
+  ! St(Nr, Nm) : Stokes number
+  ! Nr : Number of radial grid cells
+  ! Nm : Number of mass bins
+  !
+  ! Returns
+  ! -------
+  ! vrel(Nr, Nm) : Relative velocities
+
+  implicit none
+
+  double precision, intent(in)  :: vdriftmax(Nr)
+  double precision, intent(in)  :: St(Nr, Nm)
+  double precision, intent(out) :: vrel(Nr, Nm, Nm)
+  integer,          intent(in)  :: Nr
+  integer,          intent(in)  :: Nm
+
+  double precision :: dum
+  double precision :: St2p1(Nr, Nm)
+  integer          :: ir, i, j
+
+  St2p1(:, :) = St(:, :)**2 + 1.d0
+
+  do i=1, Nm
+    do j=1, i
+      do ir=1, Nr
+        dum = abs(vdriftmax(ir) * (St2p1(ir, i) - St2p1(ir, j)) / (St2p1(ir, i) * St2p1(ir, j)))
+        vrel(ir, j, i) = dum
+        vrel(ir, i, j) = dum
+      end do
+    end do
+  end do
+
+end subroutine vrel_azimuthal_drift
+
+subroutine vrad(St, vdm, vrg, vr, Nr, Nm)
+  ! Subroutine calculates the radial dust velocity with consists of a drift component
+  ! and a gas drag component.
+  !
+  ! Parameters
+  ! ----------
+  ! St(Nr, Nm) : Stokes number
+  ! vdm(Nr) : Maximum drift velocity
+  ! vrg(Nr) : Radial gas velocity
+  ! Nr : Number of radial grid cells
+  ! Nm : Number of mass bins
+  !
+  ! Returns
+  ! -------
+  ! vr(Nr, Nm) : Radial dust velocities
+
+  implicit none
+
+  double precision, intent(in)  :: St(Nr, Nm)
+  double precision, intent(in)  :: vdm(Nr)
+  double precision, intent(in)  :: vrg(Nr)
+  double precision, intent(out) :: vr(Nr, Nm)
+  integer,          intent(in)  :: Nr
+  integer,          intent(in)  :: Nm
+
+  integer :: i
+
+  do i=1, Nm
+    vr(:, i) = (vrg(:) + 2.d0 * vdm(:) * St(:, i)) / (St(:, i)**2 + 1.d0)
+  end do
+
+end subroutine vrad
+
+
+
+!!!!
+! New implementations vom löli 
+!!!
+
+subroutine vdrift_maximum(r,eta,omegaK,vdriftmax,Nr)
+
+    double precision, intent(in) :: r(Nr)
+    double precision, intent(in) :: eta(Nr)
+    double precision, intent(in) :: omegaK(Nr)
+    double precision, intent(out) :: vdriftmax(Nr)
+    integer, intent(in) :: Nr
+    
+    vdriftmax = -eta(:) * r(:) * omegaK(:)
+end subroutine
+
+
+subroutine boundary(rhs,dat,row,col,size_rhs,Nm_s,ind,,cond,boundary_value)
+    double precision, intent(inout) :: rhs(size_rhs)
+    double precision,dimension(3*Nm),  intent(out) :: dat
+    integer,dimension(3*Nm), intent(out) :: row
+    integer,dimension(3*Nm), intent(out) :: col
+    integer, intent(in) :: size_rhs
+    integer, intent(in) :: Nm_s
+    integer, intent(in) :: start
+    integer, intent(in) :: dir
+    character(len=*), intent(in) :: cond
+    double precision,dimension(Nm_s) intent(in) :: boundary_value
+    integer :: i,j,k,start,Nr
+
+    d
+
+
+
+
+
+end subroutine boundary
