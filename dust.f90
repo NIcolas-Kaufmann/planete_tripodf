@@ -249,6 +249,7 @@ subroutine calculate_m(a, rhos, fill, masses, Nr, Nm)
 
     double precision, intent(in) :: a(Nr, Nm)
     double precision, intent(in) :: rhos(Nr, Nm)
+    double precision, intent(in) :: fill(Nr, Nm)
     double precision, intent(out) :: masses(Nr, Nm)
     integer, intent(in) :: Nr
     integer, intent(in) :: Nm
@@ -921,7 +922,7 @@ subroutine fi_diff_no_limit(D, SigmaD, SigmaG, St, u, r, ri, Fi, Nr, Nm)
     implicit none
 
     double precision, intent(in) :: Sigma(Nr, Nm)
-    double precision, intent(in) :: S_tot(Nr, Nm)
+    double precision, intent(inout) :: S_tot(Nr, Nm)
     double precision, intent(in) :: s(Nr)
     double precision, intent(in) :: f_crit
     integer, intent(in) :: Nr
@@ -939,39 +940,6 @@ subroutine fi_diff_no_limit(D, SigmaD, SigmaG, St, u, r, ri, Fi, Nr, Nm)
 
 
   end subroutine dt_sigma
-
-  subroutine calc_v_rel(a_tri,v_rel,P_grad,rho_g,cs,omega,vrgas,alpha,Re,rhos,mu,Nr,Nm_l)
-    double precision, intent(in) :: a_tri(Nr,Nm_l)
-    double precision, intent(in) :: P_grad(Nr)
-    double precision, intent(in) :: rho_g(Nr)
-    double precision, intent(in) :: cs(Nr)
-    double precision, intent(in) :: omega(Nr)
-    double precision, intent(in) :: vrgas(Nr)
-    double precision, intent(in) :: alpha(Nr)
-    double precision, intent(in) :: Re(Nr)
-    double precision, intent(in) :: rhos(Nr)
-    double precision, intent(in) :: mu(Nr)
-
-    double precision, intent(out) :: v_rel(Nr,Nm_l,Nm_l)
-
-    integer, intent(in) :: Nr
-    integer, intent(in) :: Nm_l
-    !local variables 
-    integer :: irax,i,j 
-    double precision :: dv_turb,dv_rad,dv_azi,dv_vert,dv_brow,dv_tot
-    do irad = 1, Nr 
-        do i=1, Nm_l
-            do j=1, i
-                call dv_tot(a_tri(irad,i),a_tri(irad,j),P_grad,rhog,cs,omega,vrgas,alpha,Re,rhos,mu,dv_turb,dv_rad,dv_azi,dv_vert,dv_brow)
-                dv_tot = sqrt(dv_turb**2 + d_rad**2 + dv_azi**2 + dv_vert**2 + dv_brow**2)
-                v_rel(irad,i,j) = dv_tot
-                v_rel(irad,j,i) = dv_tot
-            enddo 
-        enddo 
-    enddo
-
-
-  end subroutine
 
 
 subroutine jacobian_hydrodynamic_generator(area, D, r, ri, SigmaGas, v, A, B, C, Nr, Nm)
@@ -1072,17 +1040,7 @@ subroutine jacobian_hydrodynamic_generator(area, D, r, ri, SigmaGas, v, A, B, C,
 end subroutine jacobian_hydrodynamic_generator
 
 
-  subroutine Jacobian()
 
-
-    call jacobian_coagulation_generator()
-    call jacobian_hydrodynamic_generators()
-
-    ! construct boundaries 
-
-    !Make full sparce matrix 
-
-  end subroutine
 
   subroutine st_epstein_stokes1(a, mfp, rho, Sigma, St, Nr, Nm)
   ! Subroutine calculates the Stokes number using the Epstein and the
@@ -1193,36 +1151,6 @@ subroutine d(v2, OmegaK, St, Diff, Nr, Nm)
 
 end subroutine d
 
-subroutine calc_q_eff(vrel,dv_r,dv_az,v_frag,St_max,alpha,Sigma,mu,q_eff,Nr)
-    integer, intent(in) :: Nr
-    double precision,dimension(Nr), intent(in) :: vrel
-    double precision,dimension(Nr), intent(in) :: dv_r
-    double precision,dimension(Nr), intent(in) :: dv_az
-    double precision,dimension(Nr), intent(in) :: v_frag
-    double precision,dimension(Nr), intent(in) :: St_max
-    double precision,dimension(Nr), intent(in) :: alpha
-    double precision,dimension(Nr), intent(in) :: Sigma
-    double precision,dimension(Nr), intent(in) :: mu
-    double precision,dimension(Nr), intent(out) :: q_eff
-
-    !local variables
-    integer :: ir
-    double precision, dimension(Nr) :: q_frag,p_frag,q_sweep,p_driftfrag,p_frag_trans,dv_rad,dv_az
-    double precision, parameter :: q_turb1 = -3.5d0
-    double precision, parameter :: q_turb2 = -3.75d0
-    double precision, parameter :: q_drfr  = -3.75d0
-    double p
-
-
-    call pfrag(vrel,v_frag,p_frag,Nr)
-    call p_frag_trans(St_max,alpha,Sigma,mu,p_frag_trans,Nr)
-    call pdriftfrag(dv_r,dv_az,St_max,alpha,Sigma,mu,cs,p_frag_trans,p_driftfrag,Nr)
-    call qfrag(p_driftfrag,vrel,v_frag,St_max,q_turb1,q_turb2,q_drfr,alpha,Sigma,muq_frag,Nr)
-
-    !calculate the target power-law exponent
-    q_eff = p_frag * q_frag + (1.d0 - p_frag) * q_sweep
-end subroutine
-
 
 !!! 
 ! Dustpy subroutines end here
@@ -1317,25 +1245,3 @@ subroutine vdrift_maximum(r,eta,omegaK,vdriftmax,Nr)
     
     vdriftmax = -eta(:) * r(:) * omegaK(:)
 end subroutine
-
-
-subroutine boundary(rhs,dat,row,col,size_rhs,Nm_s,ind,,cond,boundary_value)
-    double precision, intent(inout) :: rhs(size_rhs)
-    double precision,dimension(3*Nm),  intent(out) :: dat
-    integer,dimension(3*Nm), intent(out) :: row
-    integer,dimension(3*Nm), intent(out) :: col
-    integer, intent(in) :: size_rhs
-    integer, intent(in) :: Nm_s
-    integer, intent(in) :: start
-    integer, intent(in) :: dir
-    character(len=*), intent(in) :: cond
-    double precision,dimension(Nm_s) intent(in) :: boundary_value
-    integer :: i,j,k,start,Nr
-
-    d
-
-
-
-
-
-end subroutine boundary
