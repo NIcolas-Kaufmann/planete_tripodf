@@ -26,7 +26,7 @@ module tripod
     double precision, dimension(nrad_max,5) :: a_tri
     double precision, dimension(nrad_max,5) :: m_tri 
     double precision, dimension(nrad_max,2) :: rho_tri
-    double precision, dimension(nrad_max) :: rhos_tri
+    double precision, dimension(nrad_max,5) :: rhos_tri
     double precision, dimension(nrad_max,5) :: H_tri
     double precision, dimension(nrad_max) :: fill_tri
     double precision, dimension(nrad_max,5) :: St_tri
@@ -70,6 +70,8 @@ module tripod
     double precision,parameter :: inner_s_bc = 1e-4
     double precision,parameter :: outer_s_bc = 1e-4
 
+    !grid_stuff 
+    double precision, dimension(nrad_max+1) :: Ri_tri
 
 contains
 
@@ -111,6 +113,164 @@ end subroutine update_tripod
 ! this subroutine mimicks the dust.update from tripodpy 
 !!!
 
+subroutine initialize_dust(a_min_ini,a_max_ini,alpha_rad,alpha_vert,alpha_turb,fd2g,rhos,Sigma,P,cs,T,H_gas,mump,eta,mfp,OmegaK,R)
+
+    implicit none 
+
+    double precision, intent(in) :: a_min_ini 
+    double precision, intent(in) :: a_max_ini
+    double precision, intent(in) :: alpha_rad
+    double precision, intent(in) :: alpha_vert
+    double precision, intent(in) :: alpha_turb
+    double precision, intent(in) :: fd2g 
+    double precision, intent(in) :: rhos
+    double precision, intent(in) :: Sigma(nrad_max)
+    double precision, intent(in) :: P(nrad_max)
+    double precision, intent(in) :: cs(nrad_max)
+    double precision, intent(in) :: T(nrad_max)
+    double precision, intent(in) :: H_gas(nrad_max)
+    double precision, intent(in) :: mump(nrad_max)
+    double precision, intent(in) :: eta(nrad_max)
+    double precision, intent(in) :: mfp(nrad_max)
+    double precision, intent(in) :: OmegaK(nrad_max)
+    double precision, intent(in) :: R(nrad_max)
+
+    !set smin not a parameter in principle but should not be changed 
+    a_min_tri = a_min_ini
+    alpha_rad_tri = alpha_rad
+    alpha_turb_tri = alpha_turb
+    alpha_vert_tri = alpha_vert
+    rhos_tri = rhos
+    !print *, "grid."
+    !initalize the ri gird as planete does not have one
+    call log_grid_interfaces(nrad_max, R, Ri_tri)
+
+    !print *, "amax_ini."
+    call a_max_initial(a_max_ini,fd2g,Sigma,cs,P,OmegaK,R,Ri_tri)
+    
+    !print *, "Sig_ini."
+    call Sigma_initial(a_min_tri, a_max_tri,Sigma, fd2g)
+    !print *, "update_ini."
+    call update_dust(R,Ri_tri,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
+end subroutine initialize_dust
+
+
+subroutine a_max_initial(a_max_ini,fd2g,Sigma,cs,P,OmegaK,R,Ri)
+    use interpolation
+    implicit none 
+    
+    double precision, intent(in) :: a_max_ini
+    double precision, intent(in) :: fd2g
+    double precision, intent(in) :: Sigma(nrad_max)
+    double precision, intent(in) :: cs(nrad_max)
+    double precision, intent(in) :: P(nrad_max)
+    double precision, intent(in) :: OmegaK(nrad_max)
+    double precision, intent(in) :: R(nrad_max)
+    double precision, intent(in) :: Ri(nrad_max+1)
+    !local variables 
+    double precision :: P_i(nrad_max+1)
+    double precision :: gam(nrad_max)
+    double precision :: ad(nrad_max)
+    integer :: i
+
+
+
+    call interp1d(ri, r, P, P_i, nrad_max)
+
+    gam = abs((P_i(2:)-P_i(:nrad_max))/(Ri(2:)-Ri(:nrad_max))) * R/P
+
+    ad = 5d-3 * 2d0 /pi * fd2g * Sigma * rhos_tri(:,1) * (OmegaK*R)**2 /cs**2 /gam
+
+    do i = 1, nrad_max
+        a_max_tri(i) = max(1.5d0*a_min_tri(i),min(ad(i),a_max_ini))
+    enddo 
+
+end subroutine
+
+
+subroutine Sigma_initial(s_min, s_max,gas_Sigma, d2gRatio)
+  ! Calculates the initial condition of the dust surface densities.
+  !
+  ! Parameters
+  ! ----------
+  ! nrad_max         : number of radial grid cells
+  ! Nm_s         : number of size bins (expected to be 2)
+  ! q_eff      : effective size distribution slope      (nrad_max)
+  ! s_min      : minimum grain size per cell            (nrad_max)
+  ! s_max      : maximum grain size per cell            (nrad_max)
+  ! SigmaFloor : floor surface density                  (nrad_max, Nm_s)
+  ! gas_Sigma  : gas surface density                    (nrad_max)
+  ! d2gRatio   : dust-to-gas ratio                      (scalar)
+  !
+  ! Output
+  ! ------
+  ! Sig_tri      : initial dust surface density           (nrad_max, Nm_s)
+
+  implicit none
+
+  real(8), intent(in)  :: s_min(nrad_max)
+  real(8), intent(in)  :: s_max(nrad_max)
+  real(8), intent(in)  :: gas_Sigma(nrad_max)
+  real(8), intent(in)  :: d2gRatio
+
+  ! Local variables
+  real(8) :: sint, qp4, S0, S1
+  integer :: i
+
+  real(8), parameter :: Q4 = -4.0d0
+
+  q_rec = -3.5d0
+  do i = 1, nrad_max
+
+    sint = sqrt(s_min(i) * s_max(i))   ! geometric mean of s_min and s_max
+    qp4  = q_rec(i) + 4.0d0
+
+    ! ------------------------------------------------------------------
+    ! Compute fractional weights S0, S1
+    ! ------------------------------------------------------------------
+    if (q_rec(i) == Q4) then
+
+      ! q == -4 branch: use logarithmic weights
+      if (s_max(i) == s_min(i)) then
+        S0 = Sig_floor_tri(i, 1)
+        S1 = Sig_floor_tri(i, 2)
+      else
+        S0 = log(sint      / s_min(i)) / log(s_max(i) / s_min(i))
+        S1 = 1.0d0 - S0
+      end if
+
+    else
+
+      ! q != -4 branch: use power-law weights
+      if (s_max(i) <= 1.5d0 * s_min(i)) then
+        S0 = Sig_floor_tri(i, 1)
+        S1 = Sig_floor_tri(i, 2)
+      else
+        S0 = (sint**qp4 - s_min(i)**qp4) / (s_max(i)**qp4 - s_min(i)**qp4)
+        S1 = 1.0d0 - S0
+      end if
+
+    end if
+
+    ! ------------------------------------------------------------------
+    ! Scale by gas surface density and dust-to-gas ratio
+    ! ------------------------------------------------------------------
+    Sig_tri(i, 1) = d2gRatio * gas_Sigma(i) * S0
+    Sig_tri(i, 2) = d2gRatio * gas_Sigma(i) * S1
+
+    ! ------------------------------------------------------------------
+    ! Apply floor: where Sig_tri <= SigmaFloor, set to 0.1 * SigmaFloor
+    ! ------------------------------------------------------------------
+    if (Sig_tri(i, 1) <= Sig_floor_tri(i, 1)) Sig_tri(i, 1) = 0.1d0 * Sig_floor_tri(i, 1)
+    if (Sig_tri(i, 2) <= Sig_floor_tri(i, 2)) Sig_tri(i, 2) = 0.1d0 * Sig_floor_tri(i, 2)
+
+  end do
+
+end subroutine Sigma_initial
+
+
+
+
 subroutine update_dust(R,Ri,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     implicit none
 
@@ -129,25 +289,40 @@ subroutine update_dust(R,Ri,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     ! add all the updater funtions here, for example
     ! tripodpy default updater
     !['delta', 'rhos', 'fill', 'backreaction', 'f', 'qrec', 'a', 'm', 'St', 'H', 'rho', 'D', 'eps', 'v', 'p', 'q', 'SigmaFloor', 'S'].
+    !print *, "q_rec."
     call calc_q_rec(Sig_tri,a_min_tri,a_max_tri,q_rec,nrad_max)
+    !print *, "a."
     call calculate_a(a_min_tri,a_max_tri,q_rec,f_fudge,a_tri,nrad_max,Nm_l)
+    !print *, "m."
     call calculate_m(a_tri,rhos_tri,fill_tri,m_tri,nrad_max,Nm_l)
+    !print *, "St"
     call st_epstein_stokes1(a_tri,mfp,rhos_tri,Sigma,St_tri,nrad_max,Nm_l)
+    !print *, "H_d."
     call h_dubrulle1995(H_gas,St_tri,alpha_vert_tri,H_tri,nrad_max,Nm_l)
     !calculate the midplane density of the dust, which is needed for the collision rates
+    !print *, "rho."
     rho_tri = Sig_tri/(sqrt(2.0d0*pi)*H_tri(:,[1,3]))
+    !print *, "D."
     call d(alpha_rad_tri*cs**2, OmegaK, St_tri, D_tri, nrad_max, Nm_l)
 
+    !print *, "vrad."
     call vrad(St_tri, eta*R*OmegaK, v_rad_tri, nrad_max, Nm_l)
     ! Relative velocities
+    !print *, "vrel azi "
     call vrel_azimuthal_drift(eta*R*OmegaK, St_tri, v_rel_azi_tri, nrad_max, Nm_l)
+    !print *, "vrel b "
     call vrel_brownian_motion(cs, m_tri, T, v_rel_brown_tri, nrad_max, Nm_l)
+    !print *, "vrel dr "
     call vrel_radial_drift(v_rad_tri, v_rel_rad_tri, nrad_max, Nm_l)
+    !print *, "vrel turb "
     call vrel_ormel_cuzzi_2007(alpha_turb_tri, cs, mump, OmegaK, Sigma, St_tri, v_rel_turb_tri, nrad_max, Nm_l)
+    !print *, "vrel set "
     call vrel_vertical_settling(H_tri, OmegaK, St_tri, v_rel_vert_tri, nrad_max, Nm_l)
+    !print *, "vrel tot "
     v_rel_tot_tri = sqrt(v_rel_azi_tri**2 + v_rel_brown_tri**2 + v_rel_rad_tri**2 + v_rel_turb_tri**2 + v_rel_vert_tri**2)
 
     ! collision outcomes p and q 
+    !print *, "pfrag "
     call pfrag(v_rel_tot_tri, v_frag, p_frag_tri, nrad_max, Nm_l)
     call pfrag_trans( St_tri(:,Nm_l), alpha_turb_tri, Sigma, mump, p_fragtrans, nrad_max)
     call pdriftfrag(v_rel_rad_tri(:,4,5),v_rel_azi_tri(:,4,5),St_tri(:,Nm_l),alpha_rad_tri,Sigma,mump,cs,&
@@ -169,6 +344,8 @@ subroutine update_dust(R,Ri,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     call s_hyd(Fi_tot,Ri,S_hyd_tri,nrad_max,Nm_s)
     S_tot_tri = S_coag_tri + S_hyd_tri
     call def_smax_hyd(smax_dot_hyd,Sigma,cs,R,Ri)
+    !print * ,"update complete"
+    write(*,*) "test_quantity",q_eff_tri(:10)
 
 end subroutine update_dust
 
@@ -582,11 +759,25 @@ Sig_tri(:,1) = Sig_tri(:,1) - delta
 end subroutine enforce_f
 
 
-subroutine write_output()
+subroutine write_output(i_file,t)
     implicit none
+    integer, intent(in) :: i_file
+    double precision, intent(in) :: t
+    
+    integer :: i
 
+    call OPEN_OUTPUT_FILE(i_file, 1, .True., .false., "tri", 0, 0)
     ! This subroutine should handle all the output writing, for example writing the dust surface density and maximum grain size to files for post-processing and visualization. The implementation can be adjusted as needed, for example by using different file formats or adding more output variables.
-
+    do i = 1, nrad_max
+        write(i_file,*) &
+            i, &
+            sqrt(Ri_tri(i+1)*Ri_tri(i)),&
+            Sig_tri(i,1),&
+            Sig_tri(i,2),&
+            a_max_tri(i),&
+            q_rec(i),&
+            t
+    enddo 
 end subroutine write_output
 
 !!!!
@@ -921,6 +1112,42 @@ subroutine log_grid_interfaces(nrad_max, r_mid, r_int)
 end subroutine log_grid_interfaces
 
 
+subroutine read_static_gas_disk(fname, nrows,ncols,R,OmegaK,Sigma,cs,H_gas,T,mump,mfp,eta,P)
+  implicit none
+
+  character(len=*), intent(in)  :: fname
+  integer,          intent(in)  :: nrows, ncols
+  double precision, intent(out) :: R(nrows)
+  double precision, intent(out) :: OmegaK(nrows)
+  double precision, intent(out) :: Sigma(nrows)
+  double precision, intent(out) :: cs(nrows)
+  double precision, intent(out) :: H_gas(nrows)
+  double precision, intent(out) :: T(nrows)
+  double precision, intent(out) :: mump(nrows)
+  double precision, intent(out) :: mfp(nrows)
+  double precision, intent(out) :: eta(nrows)
+  double precision, intent(out) :: P(nrows)
+
+
+  !local variables
+  integer :: ierr
+  real(8) :: data_out(nrows, ncols)
+
+  call read_csv(fname,nrows,ncols,data_out,ierr)
+
+  !fill the relevant arrays
+  R = data_out(:,1) !grid 
+  OmegaK = data_out(:,2) !
+  Sigma = data_out(:,3)
+  cs = data_out(:,4)
+  H_gas = data_out(:,5)
+  T = data_out(:,6)
+  mump = data_out(:,7)
+  mfp = data_out(:,8)
+  eta = data_out(:,9)
+  P = data_out(:,10)
+
+end subroutine
 
 end module tripod
 

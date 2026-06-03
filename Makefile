@@ -12,8 +12,9 @@ SUPERLULIB   	= $(SUPERLU_DIR)/SRC/libsuperlu.a
 
 LIBS = $(SUPERLULIB) /opt/homebrew/opt/openblas/lib/libopenblas.dylib -lm
 # Source files
-SRCS = constants.f90 interpolation.f90 gas.f90 dust.f90 tripod.f90
+SRCS = constants.f90 interpolation.f90 gas.f90 dust.f90 tripod.f90 IO.f90
 MAIN = main_test.f90
+STDISK = main_static_disk.f90
 
 #SuperLU object files (you may need to adjust this based on your SuperLU build)
 splu_objs = $(SUPERLU_DIR)/../FORTRAN/c_fortran_dgssv.o
@@ -21,6 +22,7 @@ splu_objs = $(SUPERLU_DIR)/../FORTRAN/c_fortran_dgssv.o
 # Object files automatically generated from SRCS
 OBJS = $(SRCS:.f90=.o)
 MAINOBJ = $(MAIN:.f90=.o)
+STDISKOBJ = $(STDISK:.f90=.o)
 
 # Module files generated
 MODS = $(SRCS:.f90=.mod)
@@ -51,6 +53,9 @@ tripod.o: dust.o gas.o ${splu_objs}
 
 main: $(MAINOBJ) $(TARGET)
 	$(FC) $(FFLAGS) -o $@ $(MAINOBJ) $(OBJS) libtripod.a  $(splu_objs) $(LIBS)
+
+static_disk_test: $(STDISKOBJ) $(TARGET)
+	$(FC) $(FFLAGS) -o $@ $(STDISKOBJ) $(OBJS) libtripod.a  $(splu_objs) $(LIBS)
 
 clean:
 	rm -f $(OBJS) $(MODS) $(TARGET)
