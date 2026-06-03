@@ -28,7 +28,7 @@ module tripod
     double precision, dimension(nrad_max,2) :: rho_tri
     double precision, dimension(nrad_max,5) :: rhos_tri
     double precision, dimension(nrad_max,5) :: H_tri
-    double precision, dimension(nrad_max) :: fill_tri
+    double precision, dimension(nrad_max,5) :: fill_tri
     double precision, dimension(nrad_max,5) :: St_tri
     double precision, dimension(nrad_max,5) :: D_tri
     double precision, dimension(nrad_max,5) :: v_rad_tri
@@ -102,7 +102,7 @@ subroutine update_tripod(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas,dt,area,Ri)
     double precision, intent(in) :: dt
     double precision, intent(in) :: area(nrad_max)
     double precision, intent(in) :: Ri(nrad_max+1)
-    call update_dust(R,Ri,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
+    call update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     call integrate_dust(area,R,Ri,Sigma,dt)
     
     !IO stuff
@@ -143,15 +143,16 @@ subroutine initialize_dust(a_min_ini,a_max_ini,alpha_rad,alpha_vert,alpha_turb,f
     rhos_tri = rhos
     !print *, "grid."
     !initalize the ri gird as planete does not have one
-    call log_grid_interfaces(nrad_max, R, Ri_tri)
+    call log_grid_interfaces(nrad_max, R)
 
     !print *, "amax_ini."
     call a_max_initial(a_max_ini,fd2g,Sigma,cs,P,OmegaK,R,Ri_tri)
     
     !print *, "Sig_ini."
     call Sigma_initial(a_min_tri, a_max_tri,Sigma, fd2g)
-    !print *, "update_ini."
-    call update_dust(R,Ri_tri,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
+    print *, "update_ini."
+    call update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
+    print *, "update_done."
 end subroutine initialize_dust
 
 
@@ -271,11 +272,10 @@ end subroutine Sigma_initial
 
 
 
-subroutine update_dust(R,Ri,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
+subroutine update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     implicit none
 
     double precision, intent(in) :: R(nrad_max)
-    double precision, intent(in) :: Ri(nrad_max+1)
     double precision, intent(in) :: eta(nrad_max)
     double precision, intent(in) :: T(nrad_max)
     double precision, intent(in) :: mump(nrad_max)
@@ -285,7 +285,8 @@ subroutine update_dust(R,Ri,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     double precision, intent(in) :: cs(nrad_max)
     double precision, intent(in) :: H_gas(nrad_max)
     !local variables 
-    double precision :: fi_tot(nrad_max,Nm_s), fi_diffusive(nrad_max,Nm_s),fi_advective(nrad_max,Nm_s)
+    double precision :: fi_tot(nrad_max+1,Nm_s), fi_diffusive(nrad_max+1,Nm_s),fi_advective(nrad_max+1,Nm_s)
+    double precision :: v_gas(nrad_max)
     ! add all the updater funtions here, for example
     ! tripodpy default updater
     !['delta', 'rhos', 'fill', 'backreaction', 'f', 'qrec', 'a', 'm', 'St', 'H', 'rho', 'D', 'eps', 'v', 'p', 'q', 'SigmaFloor', 'S'].
@@ -306,12 +307,15 @@ subroutine update_dust(R,Ri,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     call d(alpha_rad_tri*cs**2, OmegaK, St_tri, D_tri, nrad_max, Nm_l)
 
     !print *, "vrad."
-    call vrad(St_tri, eta*R*OmegaK, v_rad_tri, nrad_max, Nm_l)
+    !secoind argument is nu 
+    call v_visc(Sigma,alpha_rad_tri*cs*H_gas,R,Ri_tri,v_gas,nrad_max)
+    !second argument is vdieftmax
+    call vrad(St_tri, eta*R*OmegaK,v_gas, v_rad_tri, nrad_max, Nm_l)
     ! Relative velocities
     !print *, "vrel azi "
     call vrel_azimuthal_drift(eta*R*OmegaK, St_tri, v_rel_azi_tri, nrad_max, Nm_l)
     !print *, "vrel b "
-    call vrel_brownian_motion(cs, m_tri, T, v_rel_brown_tri, nrad_max, Nm_l)
+    call vrel_brownian_motion(cs, m_tri(1,:), T, v_rel_brown_tri, nrad_max, Nm_l)
     !print *, "vrel dr "
     call vrel_radial_drift(v_rad_tri, v_rel_rad_tri, nrad_max, Nm_l)
     !print *, "vrel turb "
@@ -323,30 +327,36 @@ subroutine update_dust(R,Ri,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
 
     ! collision outcomes p and q 
     !print *, "pfrag "
-    call pfrag(v_rel_tot_tri, v_frag, p_frag_tri, nrad_max, Nm_l)
-    call pfrag_trans( St_tri(:,Nm_l), alpha_turb_tri, Sigma, mump, p_fragtrans, nrad_max)
+    call pfrag(v_rel_tot_tri(:,4,5), v_frag, p_frag_tri, nrad_max, Nm_l)
+    print *, "pfragtrans ",shape(p_frag_tri),(v_rel_rad_tri(2,4,5))
+    call pfrag_trans(St_tri(:,Nm_l), alpha_turb_tri, Sigma, mump, p_fragtrans, nrad_max)
+    !print *, "pdriftfrag "
     call pdriftfrag(v_rel_rad_tri(:,4,5),v_rel_azi_tri(:,4,5),St_tri(:,Nm_l),alpha_rad_tri,Sigma,mump,cs,&
                     p_fragtrans,p_drfr_tri,nrad_max)
+    !print *, "q_frag "
     call qfrag(p_drfr_tri,v_rel_tot_tri(:,4,5),v_frag,St_tri(:,Nm_l),q_turb1,q_turb2,q_drfr,alpha_turb_tri,Sigma,mump,q_frag_tri,nrad_max)
     q_eff_tri = q_frag_tri*p_frag_tri + q_sweep_tri*(1.0d0 - p_frag_tri)
 
     ! perarator sterp in tripodpy -> set the state vector rhs 
+    !print *, "rh "
     rhs(1:nrad_max*Nm_s) = reshape(transpose(Sig_tri), [nrad_max*Nm_s])
     rhs((nrad_max*Nm_s)+1:(nrad_max*Nm_s)+nrad_max) = a_max_tri*Sig_tri(:,2)
-    call smax_deriv(v_rel_tot_tri(:,4,5),rho_tri(:,2),rhos_tri, a_min_tri, a_max_tri,v_frag,Sig_tri,Sig_floor_tri,deriv_s_max,nrad_max,Nm_s)
+    print *, "rhs ", rhs((nrad_max*Nm_s)+nrad_max)
+    call smax_deriv(v_rel_tot_tri(:,4,5),rho_tri(:,2),rhos_tri(:,1), a_min_tri, a_max_tri,v_frag,Sig_tri,Sig_floor_tri,deriv_s_max,nrad_max,Nm_s)
     S_rhs = 0.0d0
-
-    call s_coag(pi*(a_tri(:,[1,3])+a_tri(:,[3,2]))**2d0,v_rel_tot_tri(:,[1,3],[3,2]),H_tri(:,[1,3]),m_tri(:,[1,3]),Sig_tri,a_min_tri,a_max_tri,q_rec,Sig_floor_tri,S_coag_tri,nrad_max,Nm_s)
-
-    call fi_adv(Sig_tri,v_rad_tri(:,[1,3]),R,Ri,fi_advective,nrad_max,Nm_s)
-    call fi_diff(D_tri(:,[1,3]),Sig_tri,Sigma,St_tri(:,[1,3])*f_drift,sqrt(alpha_rad_tri*cs**2),R,Ri,fi_diffusive,nrad_max,Nm_s)
+    !print *, " scoag"
+    call s_coag(pi*(a_tri(:,[1,3])+a_tri(:,[3,2]))**2d0,v_rel_tot_tri(:,[1,3],[3,2]),H_tri(:,[1,3]),m_tri(:,[1,3]),Sig_tri,a_min_tri,a_max_tri,q_eff_tri,Sig_floor_tri,S_coag_tri,nrad_max,Nm_s)
+    !print *, "fi "
+    call fi_adv(Sig_tri,v_rad_tri(:,[1,3]),R,Ri_tri,fi_advective,nrad_max,Nm_s)
+    !print *, "fi diff"
+    call fi_diff(D_tri(:,[1,3]),Sig_tri,Sigma,St_tri(:,[1,3])*f_drift,sqrt(alpha_rad_tri*cs**2),R,Ri_tri,fi_diffusive,nrad_max,Nm_s)
     fi_tot = fi_diffusive + fi_advective
-    call s_hyd(Fi_tot,Ri,S_hyd_tri,nrad_max,Nm_s)
+    !print *, "s_hyd "
+    call s_hyd(Fi_tot,Ri_tri,S_hyd_tri,nrad_max,Nm_s)
     S_tot_tri = S_coag_tri + S_hyd_tri
-    call def_smax_hyd(smax_dot_hyd,Sigma,cs,R,Ri)
-    !print * ,"update complete"
-    write(*,*) "test_quantity",q_eff_tri(:10)
-
+    call def_smax_hyd(smax_dot_hyd,Sigma,cs,R,Ri_tri)
+    print * ,"update complete"
+    write(*,*) "test_quantity",Ri_tri(:10)
 end subroutine update_dust
 
 subroutine Jacobian(Sigma,R,Ri,area,dt,dat_tot,row_tot,col_tot)
@@ -759,17 +769,17 @@ Sig_tri(:,1) = Sig_tri(:,1) - delta
 end subroutine enforce_f
 
 
-subroutine write_output(i_file,t)
+subroutine write_output(t,i_output)
     implicit none
-    integer, intent(in) :: i_file
     double precision, intent(in) :: t
+    integer, intent(inout) :: i_output
     
     integer :: i
 
-    call OPEN_OUTPUT_FILE(i_file, 1, .True., .false., "tri", 0, 0)
+    call OPEN_OUTPUT_FILE(5200+i_output, 1, .True., .false., "tri", 4, i_output)
     ! This subroutine should handle all the output writing, for example writing the dust surface density and maximum grain size to files for post-processing and visualization. The implementation can be adjusted as needed, for example by using different file formats or adding more output variables.
     do i = 1, nrad_max
-        write(i_file,*) &
+        write(5200+i_output,*) &
             i, &
             sqrt(Ri_tri(i+1)*Ri_tri(i)),&
             Sig_tri(i,1),&
@@ -778,6 +788,8 @@ subroutine write_output(i_file,t)
             q_rec(i),&
             t
     enddo 
+    close(5200+i_output)
+    i_output = i_output +1 
 end subroutine write_output
 
 !!!!
@@ -1050,7 +1062,7 @@ subroutine def_smax_hyd(s_smax_hyd,Sigma,cs,R,Ri)
     double precision, intent(in) :: Ri(nrad_max+1)
     !local variables 
     double precision :: s_temp_hyd(nrad_max,Nm_s)
-    double precision :: Fi_tot(nrad_max+1),Fi_adv_int(nrad_max+1),Fi_diff_int(nrad_max+1)
+    double precision :: Fi_tot(nrad_max+1,Nm_s),Fi_adv_int(nrad_max+1,Nm_s),Fi_diff_int(nrad_max+1,Nm_s)
     double precision :: Sig_temp(nrad_max,Nm_s)
 
     Sig_temp = Sig_tri * spread(a_max_tri, dim=2, ncopies=Nm_s)
@@ -1070,7 +1082,7 @@ end subroutine
 
 !calculate the Ri grid from R since planete does not calculate these by default
 
-subroutine log_grid_interfaces(nrad_max, r_mid, r_int)
+subroutine log_grid_interfaces(nrad_max, r_mid)
   ! Calculates the cell interfaces of a logarithmic radial grid from
   ! the cell centres. The interface array includes both outer boundaries,
   ! so it has size nrad_max + 1.
@@ -1092,22 +1104,20 @@ subroutine log_grid_interfaces(nrad_max, r_mid, r_int)
 
   integer, intent(in)  :: nrad_max
   real(8), intent(in)  :: r_mid(nrad_max)
-  real(8), intent(out) :: r_int(nrad_max + 1)
-
   integer :: i
 
   ! Interior interfaces: geometric mean of adjacent cell centres
   do i = 2, nrad_max
-    r_int(i) = sqrt(r_mid(i - 1) * r_mid(i))
+    Ri_tri(i) = sqrt(r_mid(i - 1) * r_mid(i))
   end do
 
   ! Inner boundary: extrapolate inward by the same log-ratio as
   ! the first cell pair  ->  r_int(1) = r_mid(1)^2 / r_int(2)
-  r_int(1)          = r_mid(1) * r_mid(1) / r_int(2)
+   Ri_tri(1) = r_mid(1) * r_mid(1) / Ri_tri(2)
 
   ! Outer boundary: extrapolate outward by the same log-ratio as
-  ! the last cell pair  ->  r_int(nrad_max+1) = r_mid(nrad_max)^2 / r_int(nrad_max)
-  r_int(nrad_max+1) = r_mid(nrad_max) * r_mid(nrad_max) / r_int(nrad_max)
+  ! the last cell pair  ->  Ri_tri(nrad_max+1) = r_mid(nrad_max)^2 / Ri_tri(nrad_max)
+  Ri_tri(nrad_max+1) = r_mid(nrad_max) * r_mid(nrad_max) / Ri_tri(nrad_max)
 
 end subroutine log_grid_interfaces
 

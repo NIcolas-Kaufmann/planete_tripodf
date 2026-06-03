@@ -3,8 +3,8 @@ FC = gfortran
 
 # Compiler flags
 # Added -cpp to run the C preprocessor which is required for #include statements in .f90 files
-FFLAGS = -O2 -g -Wall -I.. 
-
+#FFLAGS = -O2 -g -Wall -I.. 
+FFLAGS = -O0 -g -Wall -I.. -fcheck=all -Wextra -finit-real=snan
 # Paths to SuperLU
 SUPERLU_DIR = ../superlu/build
 SUPERLU_INC = -I$(SUPERLU_DIR)/SRC
