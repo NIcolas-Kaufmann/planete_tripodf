@@ -12,6 +12,8 @@ module tripod
     double precision, parameter :: q_drfr = -3.75 ! power law index for the radial drift relative velocity distribution
     double precision, parameter :: q_sweep_tri = -3. ! power law index for the sweep-up relative velocity distribution
     double precision, parameter :: f_crit = 0.425d0 ! critical mass ratio for fragmentation, this can be adjusted as needed
+    double precision, parameter :: a_lim = 1e-4 ! minimal shrikage size in cm
+    double precision, parameter :: f_drift = 0.8
     double precision, parameter,dimension(nrad_max,Nm_s) :: Sig_floor_tri = 1e-10 ! g/cm^2, floor for the surface density of the dust in each bin to avoid numerical issues, this can be adjusted as needed
 
 
@@ -51,12 +53,15 @@ module tripod
 
     !timestep stuff 
     double precision :: ts_tri
+    double precision, dimension(nrad_max) :: smax_dot_hyd
 
     !Integrated quantities 
     double precision,dimension(nrad_max*3) :: rhs
     double precision,dimension(nrad_max) :: deriv_s_max
     double precision,dimension(nrad_max,Nm_s) :: S_rhs
-    double precision,dimension(nrad_max,Nm_s) :: S_coag
+    double precision,dimension(nrad_max,Nm_s) :: S_coag_tri
+    double precision, dimension(nrad_max,Nm_s) :: S_hyd_tri
+    double precision, dimension(nrad_max,Nm_s) :: S_tot_tri
 
 
     !boundary conditions
@@ -95,7 +100,7 @@ subroutine update_tripod(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas,dt,area,Ri)
     double precision, intent(in) :: dt
     double precision, intent(in) :: area(nrad_max)
     double precision, intent(in) :: Ri(nrad_max+1)
-    call update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
+    call update_dust(R,Ri,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     call integrate_dust(area,R,Ri,Sigma,dt)
     
     !IO stuff
@@ -106,10 +111,11 @@ end subroutine update_tripod
 ! this subroutine mimicks the dust.update from tripodpy 
 !!!
 
-subroutine update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
+subroutine update_dust(R,Ri,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     implicit none
 
     double precision, intent(in) :: R(nrad_max)
+    double precision, intent(in) :: Ri(nrad_max+1)
     double precision, intent(in) :: eta(nrad_max)
     double precision, intent(in) :: T(nrad_max)
     double precision, intent(in) :: mump(nrad_max)
@@ -118,6 +124,8 @@ subroutine update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     double precision, intent(in) :: Sigma(nrad_max)
     double precision, intent(in) :: cs(nrad_max)
     double precision, intent(in) :: H_gas(nrad_max)
+    !local variables 
+    double precision :: fi_tot(nrad_max,Nm_s), fi_diffusive(nrad_max,Nm_s),fi_advective(nrad_max,Nm_s)
     ! add all the updater funtions here, for example
     ! tripodpy default updater
     !['delta', 'rhos', 'fill', 'backreaction', 'f', 'qrec', 'a', 'm', 'St', 'H', 'rho', 'D', 'eps', 'v', 'p', 'q', 'SigmaFloor', 'S'].
@@ -153,8 +161,14 @@ subroutine update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     call smax_deriv(v_rel_tot_tri(:,4,5),rho_tri(:,2),rhos_tri, a_min_tri, a_max_tri,v_frag,Sig_tri,Sig_floor_tri,deriv_s_max,nrad_max,Nm_s)
     S_rhs = 0.0d0
 
-    call s_coag(pi*(a_tri(:,[1,3])+a_tri(:,[3,2]))**2d0,v_rel_tot_tri(:,[1,3],[3,2]),H_tri(:,[1,3]),m_tri(:,[1,3]),Sig_tri,a_min_tri,a_max_tri,q_rec,Sig_floor_tri,S_coag,nrad_max,Nm_s)
-    
+    call s_coag(pi*(a_tri(:,[1,3])+a_tri(:,[3,2]))**2d0,v_rel_tot_tri(:,[1,3],[3,2]),H_tri(:,[1,3]),m_tri(:,[1,3]),Sig_tri,a_min_tri,a_max_tri,q_rec,Sig_floor_tri,S_coag_tri,nrad_max,Nm_s)
+
+    call fi_adv(Sig_tri,v_rad_tri(:,[1,3]),R,Ri,fi_advective,nrad_max,Nm_s)
+    call fi_diff(D_tri(:,[1,3]),Sig_tri,Sigma,St_tri(:,[1,3])*f_drift,sqrt(alpha_rad_tri*cs**2),R,Ri,fi_diffusive,nrad_max,Nm_s)
+    fi_tot = fi_diffusive + fi_advective
+    call s_hyd(Fi_tot,Ri,S_hyd_tri,nrad_max,Nm_s)
+    S_tot_tri = S_coag_tri + S_hyd_tri
+    call def_smax_hyd(smax_dot_hyd,Sigma,cs,R,Ri)
 
 end subroutine update_dust
 
@@ -325,7 +339,7 @@ subroutine integrate_dust(area,R,Ri,Sigma,dt)
 
     !implement the S coag source for the rhs term should work without though
     rhs(1:nrad_max*Nm_s) = rhs(1:nrad_max*Nm_s) + dt * reshape(transpose(S_rhs), [nrad_max*Nm_s])
-    rhs((nrad_max*Nm_s)+1:(nrad_max*Nm_s)+nrad_max) = rhs((nrad_max*Nm_s)+1:(nrad_max*Nm_s)+nrad_max) + dt * ((deriv_s_max*Sig_tri(:,2))+(a_max_tri*(S_rhs(:,2)+S_coag(:,2))))
+    rhs((nrad_max*Nm_s)+1:(nrad_max*Nm_s)+nrad_max) = rhs((nrad_max*Nm_s)+1:(nrad_max*Nm_s)+nrad_max) + dt * ((deriv_s_max*Sig_tri(:,2))+(a_max_tri*(S_rhs(:,2)+S_coag_tri(:,2))))
 
     call solve_superlu(SIZE(values_J), 1, values_J, rowind_J, colptr_J, rhs)
     deallocate(values_J, rowind_J, colptr_J)
@@ -477,7 +491,7 @@ subroutine solve_dummy_superlu()
 
     if (info == 0) then
         write(*,*) 'SuperLU Solve succeeded. First 5 solution elements:'
-        write(*,*) b(1:min(5, n))
+        write(*,*) b(1:min(5, n)),values(:10),colptr(:3)
     else
         write(*,*) 'SuperLU Solve failed, info = ', info
     end if
@@ -574,6 +588,339 @@ subroutine write_output()
     ! This subroutine should handle all the output writing, for example writing the dust surface density and maximum grain size to files for post-processing and visualization. The implementation can be adjusted as needed, for example by using different file formats or adding more output variables.
 
 end subroutine write_output
+
+!!!!
+!Timestep stuff
+!!
+
+subroutine calc_ts_tri(dt)
+    implicit none 
+
+    double precision, intent(out) :: dt 
+    !local variables 
+    double precision :: dt_sig,dt_smax
+
+
+    call calc_dt_Sigma(dt_sig)
+    call calc_dt_smax(dt_smax)
+
+    dt = min(dt_sig,dt_smax)
+end subroutine calc_ts_tri
+
+
+subroutine calc_dt_Sigma(dt_out)
+  ! Calculates the time step due to changes in Sig_tri.
+  !
+  ! Parameters
+  ! ----------
+  ! nrad_max         : number of radial grid cells
+  ! Nm_s         : number of size bins
+  ! Sig_tri      : dust surface density          (nrad_max, Nm_s)
+  ! S_tot      : total source term             (nrad_max, Nm_s)
+  ! Sig_floor_tri : floor value for Sigma         (nrad_max, Nm_s)
+  ! a_max_tri      : maximum grain size per cell   (nrad_max)
+  ! deriv_s_max: coagulation size growth rate  (nrad_max)
+  ! smax_dot_hyd : hydro source at a_max_tri         (nrad_max)
+  ! f_crit     : critical fragmentation ratio  (scalar)
+  ! dsig_da    : d(Sig_tri)/d(a) per radial cell (nrad_max)   [from dsigda()]
+  !
+  ! Output
+  ! ------
+  ! dt_out     : minimum time step (scalar)
+
+  implicit none
+
+  real(8),  intent(out) :: dt_out
+
+  ! Local variables
+  double precision ::dsig_da(nrad_max)
+  real(8)  :: dt(nrad_max, Nm_s)
+  real(8)  :: dt_pred
+  real(8)  :: Sigma_sum, f, numerator, denominator
+  logical  :: mask(nrad_max, Nm_s)
+  logical  :: mask2(nrad_max)
+  logical  :: any_neg
+  integer  :: i, j
+
+  real(8), parameter :: LARGE = 1.0d100
+
+
+
+  call dsigda(a_lim,q_rec,f_crit,a_max_tri,a_min_tri,Sig_tri,dsig_da,nrad_max,Nm_s)
+
+  ! ----------------------------------------------------------------
+  ! Check if any interior S_tot < 0  (Python: sim.dust.S.tot[1:-1, ...])
+  ! ----------------------------------------------------------------
+  any_neg = .false.
+  do j = 1, Nm_s
+    do i = 2, nrad_max - 1        ! interior rows only (1-based; skip 1 and nrad_max)
+      if (S_tot_tri(i, j) < 0.0d0) then
+        any_neg = .true.
+        exit
+      end if
+    end do
+    if (any_neg) exit
+  end do
+
+  if (.not. any_neg) then
+    dt_out = LARGE
+    return
+  end if
+
+  ! ----------------------------------------------------------------
+  ! Build mask: Sig_tri > Sig_triFloor  .AND.  S_tot < 0
+  ! then zero out the first and last rows
+  ! ----------------------------------------------------------------
+  do j = 1, Nm_s
+    do i = 1, nrad_max
+      mask(i, j) = (Sig_tri(i, j) > Sig_floor_tri(i, j)) .and. (S_tot_tri(i, j) < 0.0d0)
+    end do
+  end do
+  mask(1,  :) = .false.
+  mask(nrad_max, :) = .false.
+
+  ! ----------------------------------------------------------------
+  ! Build mask2 (radial vector, length nrad_max)
+  ! Python: S_tot[:,1]*Sigma[:,0] - S_tot[:,0]*Sigma[:,1] < 0
+  !         AND  f = Sigma[:,1]/Sigma.sum(-1)  < 0.43
+  ! Note: Python index 0 -> Fortran index 1, Python 1 -> Fortran 2
+  ! ----------------------------------------------------------------
+  do i = 1, nrad_max
+    Sigma_sum = 0.0d0
+    do j = 1, Nm_s
+      Sigma_sum = Sigma_sum + Sig_tri(i, j)
+    end do
+
+    if (Sigma_sum > 0.0d0) then
+      f = Sig_tri(i, 2) / Sigma_sum
+    else
+      f = 0.0d0
+    end if
+
+    mask2(i) = ( S_tot_tri(i, 2) * Sig_tri(i, 1) - S_tot_tri(i, 1) * Sig_tri(i, 2) < 0.0d0 ) &
+               .and. ( f < 0.43d0 )
+  end do
+  ! Boundaries cannot be active
+  mask2(1)  = .false.
+  mask2(nrad_max) = .false.
+
+  ! ----------------------------------------------------------------
+  ! Initialise dt to LARGE everywhere
+  ! ----------------------------------------------------------------
+  dt(:, :) = LARGE
+
+  ! ----------------------------------------------------------------
+  ! dt[mask] = |Sig_tri[mask] / S_tot[mask]|
+  ! ----------------------------------------------------------------
+  do j = 1, Nm_s
+    do i = 1, nrad_max
+      if (mask(i, j)) then
+        if (S_tot_tri(i, j) /= 0.0d0) then
+          dt(i, j) = abs(Sig_tri(i, j) / S_tot_tri(i, j))
+        end if
+      end if
+    end do
+  end do
+
+  ! ----------------------------------------------------------------
+  ! Predictive time step for mask2 cells (second size bin, j=2)
+  !
+  ! Python numerator:
+  !   10 * ( -0.1*a_max_tri * dsig_da + Sig_tri[:,1] - f_crit*Sig_tri.sum(-1) )
+  ! Python denominator:
+  !   S_tot[:,1]*(f_crit-1) + f_crit*S_tot[:,0]
+  !   + dsig_da*deriv_s_max + smax_dot_hyd*dsig_da
+  ! ----------------------------------------------------------------
+  do i = 2, nrad_max - 1
+    if (mask2(i)) then
+      Sigma_sum = 0.0d0
+      do j = 1, Nm_s
+        Sigma_sum = Sigma_sum + Sig_tri(i, j)
+      end do
+
+      numerator   = 10.0d0 * ( -0.1d0 * a_max_tri(i) * dsig_da(i) &
+                               + Sig_tri(i, 2)                    &
+                               - f_crit * Sigma_sum )
+
+      denominator = S_tot_tri(i, 2) * (f_crit - 1.0d0)             &
+                  + f_crit * S_tot_tri(i, 1)                        &
+                  + dsig_da(i) * deriv_s_max(i)                 &
+                  + smax_dot_hyd(i) * dsig_da(i)
+
+      ! Handle NaN / Inf (zero denominator) the same way Python does
+      if (denominator == 0.0d0) then
+        dt_pred = LARGE
+      else
+        dt_pred = abs(numerator / denominator)
+        if (dt_pred /= dt_pred) dt_pred = LARGE   ! NaN guard
+        if (dt_pred > LARGE)    dt_pred = LARGE   ! Inf guard
+      end if
+
+      dt(i, 2) = min(dt(i, 2), dt_pred)
+    end if
+  end do
+
+  ! ----------------------------------------------------------------
+  ! Return global minimum
+  ! ----------------------------------------------------------------
+  dt_out = LARGE
+  do j = 1, Nm_s
+    do i = 1, nrad_max
+      if (dt(i, j) < dt_out) dt_out = dt(i, j)
+    end do
+  end do
+
+end subroutine calc_dt_Sigma
+
+subroutine calc_dt_smax(dt_out)
+  ! Calculates the time step due to changes in smax.
+  ! Change of smax during one integration step bound by smin and maximum growth factor.
+  !
+  ! Parameters
+  ! ----------
+  ! nrad_max          : number of radial grid cells
+  ! Nm_s          : number of size bins
+  ! Sigma       : dust surface density          (nrad_max, Nm_s)
+  ! S_tot       : total source term             (nrad_max, Nm_s)
+  ! a_max_tri       : maximum grain size per cell   (nrad_max)
+  ! deriv_s_max   : coagulation size growth rate  (nrad_max)
+  ! smax_dot_hyd: hydro source at a_max_tri         (nrad_max)
+  !
+  ! Output
+  ! ------
+  ! dt_out      : minimum time step (scalar)
+
+  implicit none
+
+  real(8), intent(out) :: dt_out
+
+  ! Local variables
+  real(8)  :: f, Sigma_sum, smax_dot, dt_i
+  logical  :: mask2(nrad_max)
+  integer  :: i, j
+
+  real(8), parameter :: LARGE = 1.0d100
+  real(8), parameter :: EPS   = 1.0d-100
+
+  ! ----------------------------------------------------------------
+  ! Build mask2 (radial vector):
+  ! Python: S_tot[:,1]*Sigma[:,0] - S_tot[:,0]*Sigma[:,1] < 0
+  !         AND  f = Sigma[:,1] / Sigma.sum(-1)  < 0.43
+  ! Note: Python index 0 -> Fortran 1, Python index 1 -> Fortran 2
+  ! ----------------------------------------------------------------
+  do i = 1, nrad_max
+    Sigma_sum = 0.0d0
+    do j = 1, Nm_s
+      Sigma_sum = Sigma_sum + Sig_tri(i, j)
+    end do
+
+    if (Sigma_sum > 0.0d0) then
+      f = Sig_tri(i, 2) / Sigma_sum
+    else
+      f = 0.0d0
+    end if
+
+    mask2(i) = ( S_tot_tri(i, 2) * Sig_tri(i, 1) - S_tot_tri(i, 1) * Sig_tri(i, 2) < 0.0d0 ) &
+               .and. ( f < f_crit )
+  end do
+
+  ! ----------------------------------------------------------------
+  ! Loop over interior cells only: Python [1:-1] -> Fortran i=2,nrad_max-1
+  !
+  ! smax_dot = min( |deriv_s_max[i]| , |deriv_s_max[i] + smax_dot_hyd[i]| )
+  ! dt[i]    = a_max_tri[i] / (smax_dot + 1e-100)
+  ! dt[i]    = LARGE  if mask2[i] is true
+  ! ----------------------------------------------------------------
+  dt_out = LARGE
+
+  do i = 2, nrad_max - 1
+    if (mask2(i)) then
+      ! This cell is excluded — keep LARGE
+      cycle
+    end if
+
+    smax_dot = min( abs(deriv_s_max(i)), abs(deriv_s_max(i) + smax_dot_hyd(i)) )
+    dt_i     = a_max_tri(i) / (smax_dot + EPS)
+
+    if (dt_i < dt_out) dt_out = dt_i
+  end do
+
+end subroutine calc_dt_smax
+
+
+subroutine def_smax_hyd(s_smax_hyd,Sigma,cs,R,Ri)
+
+    implicit none 
+
+    double precision, intent(out) :: s_smax_hyd(nrad_max)
+    double precision, intent(in) :: Sigma(nrad_max)
+    double precision, intent(in) :: cs (nrad_max)
+    double precision, intent(in) :: R(nrad_max)
+    double precision, intent(in) :: Ri(nrad_max+1)
+    !local variables 
+    double precision :: s_temp_hyd(nrad_max,Nm_s)
+    double precision :: Fi_tot(nrad_max+1),Fi_adv_int(nrad_max+1),Fi_diff_int(nrad_max+1)
+    double precision :: Sig_temp(nrad_max,Nm_s)
+
+    Sig_temp = Sig_tri * spread(a_max_tri, dim=2, ncopies=Nm_s)
+
+    call fi_diff(D_tri(:,[1,3]),Sig_temp,Sigma,St_tri(:,[1,3])*f_drift,sqrt(alpha_rad_tri * cs ** 2),&
+                R,Ri,Fi_diff_int,nrad_max,Nm_s)
+
+    call fi_adv(Sig_temp, v_rad_tri(:,[1,3]),R,Ri,Fi_adv_int,nrad_max,Nm_s)
+    Fi_tot = Fi_adv_int + Fi_diff_int
+
+
+    call s_hyd(Fi_tot,Ri,s_temp_hyd,nrad_max, Nm_s)
+    s_smax_hyd = (s_temp_hyd(:,2) - S_hyd_tri(:,2)*a_max_tri)/Sig_tri(:,2)
+
+
+end subroutine
+
+!calculate the Ri grid from R since planete does not calculate these by default
+
+subroutine log_grid_interfaces(nrad_max, r_mid, r_int)
+  ! Calculates the cell interfaces of a logarithmic radial grid from
+  ! the cell centres. The interface array includes both outer boundaries,
+  ! so it has size nrad_max + 1.
+  !
+  ! Interior interfaces are placed at the geometric mean of adjacent
+  ! centres. The inner and outer boundary interfaces are extrapolated
+  ! by the same log-spacing as the first and last cell pair respectively.
+  !
+  ! Parameters
+  ! ----------
+  ! nrad_max : number of grid cells
+  ! r_mid    : cell centre radii, size (nrad_max)
+  !
+  ! Output
+  ! ------
+  ! r_int    : cell interface radii, size (nrad_max + 1)
+
+  implicit none
+
+  integer, intent(in)  :: nrad_max
+  real(8), intent(in)  :: r_mid(nrad_max)
+  real(8), intent(out) :: r_int(nrad_max + 1)
+
+  integer :: i
+
+  ! Interior interfaces: geometric mean of adjacent cell centres
+  do i = 2, nrad_max
+    r_int(i) = sqrt(r_mid(i - 1) * r_mid(i))
+  end do
+
+  ! Inner boundary: extrapolate inward by the same log-ratio as
+  ! the first cell pair  ->  r_int(1) = r_mid(1)^2 / r_int(2)
+  r_int(1)          = r_mid(1) * r_mid(1) / r_int(2)
+
+  ! Outer boundary: extrapolate outward by the same log-ratio as
+  ! the last cell pair  ->  r_int(nrad_max+1) = r_mid(nrad_max)^2 / r_int(nrad_max)
+  r_int(nrad_max+1) = r_mid(nrad_max) * r_mid(nrad_max) / r_int(nrad_max)
+
+end subroutine log_grid_interfaces
+
+
 
 end module tripod
 

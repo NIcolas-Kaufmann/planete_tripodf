@@ -473,36 +473,6 @@ subroutine rho_midplane(Hp, Sigma, rho, Nr)
 
 end subroutine rho_midplane
 
-
-subroutine s_hyd(Fi, ri, Shyd, Nr)
-   ! Subroutine calculates the hydrodynamic sources from the interface fluxes.
-   !
-   ! Parameters
-   ! ---------
-   ! Fi(Nr+1) : Mass fluxes through grid interfaces
-   ! ri(Nr+1) : Grid itnerfaces
-   ! Nr : Number of radial grid cells
-   !
-   ! Returns
-   ! -------
-   ! Shyd(Nr) : Hydrodynamic source terms
-
-   implicit none
-
-   double precision, intent(in)  :: Fi(Nr+1)
-   double precision, intent(in)  :: ri(Nr+1)
-   double precision, intent(out) :: Shyd(Nr)
-   integer,          intent(in)  :: Nr
-
-   integer :: ir
-
-   do ir=1, Nr
-      Shyd(ir) = 2.d0 * (Fi(ir)*ri(ir) - Fi(ir+1)*ri(ir+1)) / (ri(ir+1)**2 - ri(ir)**2)
-   end do
-
-end subroutine s_hyd
-
-
 subroutine s_tot(s_ext, s_hyd, s, Nr)
    ! Subrountine calculates the total gas source terms.
    !
