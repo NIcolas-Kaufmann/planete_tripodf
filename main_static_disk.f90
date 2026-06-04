@@ -34,7 +34,7 @@ program main
     double precision,parameter :: t_max = 1d5
 
     real(8) :: snaps(nsnaps)
-    integer :: i_output 
+    integer :: i_output, i_ts
     !
     integer :: i
 
@@ -43,6 +43,7 @@ program main
         (log10(t_max)-log10(t_min))/(nsnaps-1) )
     snaps = snaps * an
     i_output = 1
+    i_ts = 1
     time = 0d0
 
     print *, "starting programm"
@@ -55,10 +56,12 @@ program main
     call initialize_dust(a_min_ini,a_max_ini,alpha,alpha,alpha,fd2g,rhos,Sigma,P,cs,T,H_gas,mump,eta,mfp,OmegaK,R)
     print *, "read the gas disk"
     call write_output(0d0,i_output)
+    
 
     do while(.true.)
         print *, "update",time/an
         call update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
+        print *,"wub",deriv_s_max(:5)
         if(any(abs(snaps-time) .lt. epsilon(time)))then 
             print *, "write at",time/an
             call write_output(time,i_output)
@@ -67,12 +70,16 @@ program main
         call calc_ts_tri(timestep)
         call limit_ts_to_snaps(time,timestep,timestep_lim,snaps,nsnaps)
         print *, "integrate_dust",time/an,timestep_lim/an, timestep/an
+        timestep_lim = 1e-1 *an
         call  integrate_dust(area,R,Ri_tri,Sigma,timestep_lim)
-
+        print *,"wub",deriv_s_max(:5)
         time = time + timestep_lim
+        i_ts = i_ts +1 
         if(.True.)then 
-            call write_output(time,i_output)
-            stop
+            if(time > 1e2*an .or. .false.)then 
+                call write_output(time,i_output)
+                stop
+            endif
         endif 
     enddo
 
@@ -101,3 +108,5 @@ subroutine limit_ts_to_snaps(t,dt,dt_lim,snaps,nsnaps)
   dt_lim = min(dt,snaps(i) - t)
 
 end subroutine limit_ts_to_snaps
+
+

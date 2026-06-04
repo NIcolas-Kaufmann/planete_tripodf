@@ -185,10 +185,14 @@ subroutine a_max_initial(a_max_ini,fd2g,Sigma,cs,P,OmegaK,R,Ri)
     gam = abs((P_i(2:)-P_i(:nrad_max))/(Ri(2:)-Ri(:nrad_max))) * R/P
 
     ad = 5d-3 * 2d0 /pi * fd2g * Sigma * rhos_tri(:,1) * (OmegaK*R)**2 /cs**2 /gam
+    
 
     do i = 1, nrad_max
         a_max_tri(i) = max(1.5d0*a_min_tri(i),min(ad(i),a_max_ini))
     enddo 
+    print *, ad
+    print *, "-----"
+    print*,a_max_tri
 
 end subroutine
 
@@ -309,7 +313,8 @@ subroutine update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     rho_tri = Sig_tri/(sqrt(2.0d0*pi)*H_tri(:,[1,3]))
     !print *, "D."
     call d(alpha_rad_tri*cs**2, OmegaK, St_tri, D_tri, nrad_max, Nm_l)
-
+    D_tri(1:2,:) = 0d0 
+    D_tri(nrad_max-2+1:,:) = 0d0
     !print *, "vrad."
     !secoind argument is nu 
     call v_visc(Sigma,alpha_rad_tri*cs*H_gas,R,Ri_tri,v_gas,nrad_max)
@@ -319,7 +324,7 @@ subroutine update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     !print *, "vrel azi "
     call vrel_azimuthal_drift(eta*R*OmegaK, St_tri, v_rel_azi_tri, nrad_max, Nm_l)
     !print *, "vrel b "
-    call vrel_brownian_motion(cs, m_tri(1,:), T, v_rel_brown_tri, nrad_max, Nm_l)
+    call vrel_brownian_motion(cs, m_tri, T, v_rel_brown_tri, nrad_max, Nm_l)
     !print *, "vrel dr "
     call vrel_radial_drift(v_rad_tri, v_rel_rad_tri, nrad_max, Nm_l)
     !print *, "vrel turb "
@@ -346,6 +351,7 @@ subroutine update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     rhs(1:nrad_max*Nm_s) = reshape(transpose(Sig_tri), [nrad_max*Nm_s])
     rhs((nrad_max*Nm_s)+1:(nrad_max*Nm_s)+nrad_max) = a_max_tri*Sig_tri(:,2)
     !print *, "rhs ", rhs((nrad_max*Nm_s)+nrad_max)
+    print *,"vrel", v_rel_tot_tri(:5,4,5),v_rel_azi_tri(:5,4,5),v_rel_rad_tri(:5,4,5),v_rel_turb_tri(:5,4,5),v_rel_vert_tri(:5,4,5),v_rel_brown_tri(:5,4,5)
     call smax_deriv(v_rel_tot_tri(:,4,5),rho_tri(:,2),rhos_tri(:,1), a_min_tri, a_max_tri,v_frag,Sig_tri,Sig_floor_tri,deriv_s_max,nrad_max,Nm_s)
     S_rhs = 0.0d0
     !print *, " scoag"
@@ -368,7 +374,7 @@ subroutine update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     !print *, "gas mfp ",mfp(nrad_max-3:)
     !print *, "gas cs ",cs(nrad_max-3:)
     !print *, "gas H ",H_gas(nrad_max-3:)
-   ! print *, "D eta ",D_tri(nrad_max-3:,3)
+    print *, "D eta ",D_tri(nrad_max-3:,3)
 end subroutine update_dust
 
 subroutine Jacobian(Sigma,R,Ri,area,dt,dat_tot,row_tot,col_tot)
@@ -400,7 +406,7 @@ subroutine Jacobian(Sigma,R,Ri,area,dt,dat_tot,row_tot,col_tot)
 
 
     cross_section_tri = pi*(a_tri(:,[1,3])+a_tri(:,[3,2]))**2d0
-    call jacobian_coagulation_generator(cross_section_tri,v_rel_tot_tri(:,[1,3],[3,2]),H_tri(:,[1,3]),m_tri(:,[1,3]),Sig_tri,a_min_tri,a_max_tri,q_rec,&
+    call jacobian_coagulation_generator(cross_section_tri,v_rel_tot_tri(:,[1,3],[3,2]),H_tri(:,[1,3]),m_tri(:,[1,3]),Sig_tri,a_min_tri,a_max_tri,q_eff_tri,&
                                         dat_coag,row_coag,col_coag,nrad_max,Nm_s)
     !Fortan idexing the arrays wer constucted with python sttyle indexing in mind 
     row_coag = row_coag + 1
@@ -505,7 +511,7 @@ subroutine Y_jacobian(area,R,Ri,Sigma,dt,values_J_out,rowind_J_out,colptr_J_out)
         found = .false.
         do k = 1, size(dat_total)
             if (row_total(k) == i .and. col_total(k) == i) then
-                dat_total(k) = 1 - dat_total(k) 
+                dat_total(k) = 1d0  + dat_total(k) 
                 found = .true.
                 exit
             end if
@@ -515,11 +521,12 @@ subroutine Y_jacobian(area,R,Ri,Sigma,dt,values_J_out,rowind_J_out,colptr_J_out)
             nnz_diag = nnz_diag + 1
             row_diag(nnz_diag) = i
             col_diag(nnz_diag) = i
-            dat_diag(nnz_diag) = -dt
+            dat_diag(nnz_diag) = 1
         end if
     end do
 
     if (nnz_diag > 0) then
+        print *, "t---------------------------"
         dat_total = [dat_total, dat_diag(1:nnz_diag)]
         row_total = [row_total, row_diag(1:nnz_diag)]
         col_total = [col_total, col_diag(1:nnz_diag)]
@@ -559,10 +566,10 @@ subroutine integrate_dust(area,R,Ri,Sigma,dt)
     print * , "line 1 " ,size(values_J(:5))
     !print *, "calling 1dsa", rhs(1:nrad_max*Nm_s) + dt * reshape(transpose(S_rhs), [nrad_max*Nm_s])
     !implement the S coag source for the rhs term should work without though
-    !rhs(1:nrad_max*Nm_s) = rhs(1:nrad_max*Nm_s) + dt * reshape(transpose(S_rhs), [nrad_max*Nm_s])
-    print * , "line 1 " 
-    !rhs((nrad_max*Nm_s)+1:(nrad_max*Nm_s)+nrad_max) = rhs((nrad_max*Nm_s)+1:(nrad_max*Nm_s)+nrad_max) + dt * ((deriv_s_max*Sig_tri(:,2))+(a_max_tri*(S_rhs(:,2)+S_coag_tri(:,2))))
-    print *, "calling superlu"
+    rhs(1:nrad_max*Nm_s) = rhs(1:nrad_max*Nm_s) + dt * reshape(transpose(S_rhs), [nrad_max*Nm_s])
+    rhs((nrad_max*Nm_s)+1:(nrad_max*Nm_s)+nrad_max) = rhs((nrad_max*Nm_s)+1:(nrad_max*Nm_s)+nrad_max) + dt * ((deriv_s_max*Sig_tri(:,2))+(a_max_tri*(S_rhs(:,2)+S_coag_tri(:,2))))
+    print *, "calling superlu", rhs(nrad_max*Nm_s -6 : nrad_max*Nm_s+2)
+    call print_csc_subblock(nrad_max*Nm_s-2*Nm_s,nrad_max*Nm_s,nrad_max*Nm_s-2*Nm_s,nrad_max*Nm_s,size(values_J),colptr_J,rowind_J,values_J)
     call solve_superlu(SIZE(values_J), 1, values_J, rowind_J, colptr_J, rhs)
     print *, "dealovate arrays"
     deallocate(values_J, rowind_J)
@@ -631,6 +638,7 @@ subroutine finalize_integration()
 
     Sig_tri = reshape(rhs(1:nrad_max*Nm_s), [nrad_max,Nm_s], order=[2,1])
     a_max_tri = rhs(nrad_max*Nm_s+1:nrad_max*Nm_s+nrad_max)/Sig_tri(:,2)
+    print *, a_max_tri
     a_max_tri = max(a_max_tri, 1.5d0 * a_min_tri) ! enforce that a_max is not smaller than a_min to avoid numerical issues, this can be adjusted as needed
     call enforce_f() ! enforce that the fragmentation barrier is respected by adjusting the surface density in the largest bin, this is a simple fix to avoid numerical issues and can be adjusted as needed
 end subroutine finalize_integration
@@ -822,7 +830,7 @@ subroutine write_output(t,i_output)
             Sig_tri(i,1),&
             Sig_tri(i,2),&
             a_max_tri(i),&
-            q_rec(i),&
+            q_eff_tri(i),&
             t
     enddo 
     close(5200+i_output)
@@ -1194,6 +1202,42 @@ subroutine read_static_gas_disk(fname, nrows,ncols,R,OmegaK,Sigma,cs,H_gas,T,mum
   eta = data_out(:,9)
   P = data_out(:,10)
 
+end subroutine
+
+subroutine print_csc_subblock(row_start, row_end, col_start, col_end, &
+                               ncol, col_ptr, row_ind, csc_val)
+  use iso_fortran_env, only: dp => real64, ip => int32
+  implicit none
+  integer(ip), intent(in) :: row_start, row_end     ! e.g. N-M, N
+  integer(ip), intent(in) :: col_start, col_end     ! e.g. 1, N
+  integer(ip), intent(in) :: ncol
+  integer(ip), intent(in) :: col_ptr(ncol+1)
+  integer(ip), intent(in) :: row_ind(:)
+  real(dp),    intent(in) :: csc_val(:)
+
+  integer(ip) :: nrows, ncols, i_col, k
+  real(dp), allocatable :: dense(:,:)
+
+  nrows = row_end   - row_start + 1
+  ncols = col_end   - col_start + 1
+  allocate(dense(nrows, ncols))
+  dense = 0.0_dp
+
+  do i_col = col_start, min(col_end, ncol)
+    do k = col_ptr(i_col), col_ptr(i_col+1) - 1
+      if (row_ind(k) >= row_start .and. row_ind(k) <= row_end) then
+        dense(row_ind(k) - row_start + 1, &
+              i_col       - col_start + 1) = csc_val(k)
+      end if
+    end do
+  end do
+
+  write(*,'(A,I0,A,I0)') "  rows ", row_start, " to ", row_end
+  do k = 1, nrows
+    write(*,'(*(ES10.3,1X))') dense(k, :)
+  end do
+
+  deallocate(dense)
 end subroutine
 
 end module tripod
