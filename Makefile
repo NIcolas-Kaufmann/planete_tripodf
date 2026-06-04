@@ -12,7 +12,7 @@ SUPERLULIB   	= $(SUPERLU_DIR)/SRC/libsuperlu.a
 
 LIBS = $(SUPERLULIB) /opt/homebrew/opt/openblas/lib/libopenblas.dylib -lm
 # Source files
-SRCS = constants.f90 interpolation.f90 gas.f90 dust.f90 tripod.f90 IO.f90
+SRCS = constants.f90 interpolation.f90 gas.f90 dust.f90 csc_builder.f90 tripod.f90 IO.f90 
 MAIN = main_test.f90
 STDISK = main_static_disk.f90
 

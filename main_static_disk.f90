@@ -66,7 +66,7 @@ program main
         print *, "calc_ts",time/an
         call calc_ts_tri(timestep)
         call limit_ts_to_snaps(time,timestep,timestep_lim,snaps,nsnaps)
-        print *, "integrate_dust",time/an,timestep_lim/an
+        print *, "integrate_dust",time/an,timestep_lim/an, timestep/an
         call  integrate_dust(area,R,Ri_tri,Sigma,timestep_lim)
 
         time = time + timestep_lim

@@ -65,10 +65,10 @@ module tripod
 
 
     !boundary conditions
-    double precision,parameter, dimension(Nm_s) :: inner_bc = [1e-5, 1e-5] ! small non-zero values to avoid numerical issues, these can be adjusted as needed
-    double precision, parameter, dimension(Nm_s) :: outer_bc = [1e-5, 1e-5]
+    double precision, dimension(Nm_s) :: inner_bc = [1e-5, 1e-5] ! small non-zero values to avoid numerical issues, these can be adjusted as needed
+    double precision, dimension(Nm_s) :: outer_bc = [1e-11, 1e-11]
     double precision,parameter :: inner_s_bc = 1e-4
-    double precision,parameter :: outer_s_bc = 1e-4
+    double precision,parameter :: outer_s_bc = 7.8431328811173312E-005
 
     !grid_stuff 
     double precision, dimension(nrad_max+1) :: Ri_tri
@@ -152,6 +152,10 @@ subroutine initialize_dust(a_min_ini,a_max_ini,alpha_rad,alpha_vert,alpha_turb,f
     call Sigma_initial(a_min_tri, a_max_tri,Sigma, fd2g)
     print *, "update_ini."
     call update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
+    print *, "setup boundaries"
+    !set boundaries 
+    inner_bc = Sig_tri(2,:)
+    outer_bc = Sig_tri(nrad_max-1,:)
     print *, "update_done."
 end subroutine initialize_dust
 
@@ -328,7 +332,7 @@ subroutine update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     ! collision outcomes p and q 
     !print *, "pfrag "
     call pfrag(v_rel_tot_tri(:,4,5), v_frag, p_frag_tri, nrad_max, Nm_l)
-    print *, "pfragtrans ",shape(p_frag_tri),(v_rel_rad_tri(2,4,5))
+    !print *, "pfragtrans ",shape(p_frag_tri),(v_rel_rad_tri(2,4,5))
     call pfrag_trans(St_tri(:,Nm_l), alpha_turb_tri, Sigma, mump, p_fragtrans, nrad_max)
     !print *, "pdriftfrag "
     call pdriftfrag(v_rel_rad_tri(:,4,5),v_rel_azi_tri(:,4,5),St_tri(:,Nm_l),alpha_rad_tri,Sigma,mump,cs,&
@@ -341,7 +345,7 @@ subroutine update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     !print *, "rh "
     rhs(1:nrad_max*Nm_s) = reshape(transpose(Sig_tri), [nrad_max*Nm_s])
     rhs((nrad_max*Nm_s)+1:(nrad_max*Nm_s)+nrad_max) = a_max_tri*Sig_tri(:,2)
-    print *, "rhs ", rhs((nrad_max*Nm_s)+nrad_max)
+    !print *, "rhs ", rhs((nrad_max*Nm_s)+nrad_max)
     call smax_deriv(v_rel_tot_tri(:,4,5),rho_tri(:,2),rhos_tri(:,1), a_min_tri, a_max_tri,v_frag,Sig_tri,Sig_floor_tri,deriv_s_max,nrad_max,Nm_s)
     S_rhs = 0.0d0
     !print *, " scoag"
@@ -355,8 +359,16 @@ subroutine update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     call s_hyd(Fi_tot,Ri_tri,S_hyd_tri,nrad_max,Nm_s)
     S_tot_tri = S_coag_tri + S_hyd_tri
     call def_smax_hyd(smax_dot_hyd,Sigma,cs,R,Ri_tri)
-    print * ,"update complete"
-    write(*,*) "test_quantity",Ri_tri(:10)
+    !print * ,"update complete"
+    !write(*,*) "test_quantity",Ri_tri(:10)
+    !print *, "gas Sigma", Sigma(nrad_max-3:)
+    !print *, "gas eta ", eta(nrad_max-3:)
+    !print *, "gas T ",T(nrad_max-3:)
+    !print *, "gas mu ",mump(nrad_max-3:)
+    !print *, "gas mfp ",mfp(nrad_max-3:)
+    !print *, "gas cs ",cs(nrad_max-3:)
+    !print *, "gas H ",H_gas(nrad_max-3:)
+   ! print *, "D eta ",D_tri(nrad_max-3:,3)
 end subroutine update_dust
 
 subroutine Jacobian(Sigma,R,Ri,area,dt,dat_tot,row_tot,col_tot)
@@ -398,10 +410,10 @@ subroutine Jacobian(Sigma,R,Ri,area,dt,dat_tot,row_tot,col_tot)
     call jacobian_hydrodynamic_generator(area,D_tri(:,[1,3]),R,Ri,Sigma,v_rad_tri(:,3),A,B,C,nrad_max,Nm_s)
 
     !transpose the arrays first to match the C style ordering of indices and then reshape them to 1D arrays
-    dat_hydro = [RESHAPE(Transpose(A(Nm_s+1:,:)), [SIZE(A(Nm_s+1:,:))]), RESHAPE(Transpose(B), [SIZE(B)]), RESHAPE(Transpose(C(1:nrad_max-Nm_s,:)), [SIZE(C(1:nrad_max-Nm_s,:))])]
+    allocate(dat_hydro(3*N_tot -2*Nm_s),row_hydro(3*N_tot -2*Nm_s),col_hydro(3*N_tot -2*Nm_s))
+    dat_hydro = [RESHAPE(Transpose(A(2:,:)), [N_tot - Nm_s]), RESHAPE(Transpose(B), [N_tot]), RESHAPE(Transpose(C(1:nrad_max-1,:)), [N_tot - Nm_s])]
     row_hydro = [(i+Nm_s, i=1,N_tot-Nm_s), (i, i=1,N_tot), (i, i=1,N_tot-Nm_s)]
     col_hydro = [(i, i=1,N_tot-Nm_s), (i, i=1,N_tot), (i+Nm_s, i=1,N_tot-Nm_s)]
-
     !inner boundary
     row_in = [(i, i=1,Nm_s), (i, i=1,Nm_s), (i, i=1,Nm_s)]
     col_in = [(i, i=1,Nm_s), (i+Nm_s, i=1,Nm_s), (i+2*Nm_s, i=1,Nm_s)]
@@ -419,22 +431,27 @@ subroutine Jacobian(Sigma,R,Ri,area,dt,dat_tot,row_tot,col_tot)
     row_tot = [row_hydro, row_coag, row_in, row_out]
     col_tot = [col_hydro, col_coag, col_in, col_out]
 
-
-
+    do i = 1, size(dat_tot)
+      if(row_tot(i) == N_tot-2)then
+        print *, row_tot(i),col_tot(i), dat_tot(i)
+      endif
+    enddo 
     !se
 
 end subroutine Jacobian
 
-subroutine Y_jacobian(area,R,Ri,Sigma,dt,values_J,rowind_J,colptr_J)    
-    implicit none
+subroutine Y_jacobian(area,R,Ri,Sigma,dt,values_J_out,rowind_J_out,colptr_J_out)    
+  use csc_builder, only: coo_to_csc
+  implicit none
 
     double precision, intent(in) :: area(nrad_max)
     double precision, intent(in) :: R(nrad_max)
     double precision, intent(in) :: Ri(nrad_max+1)
     double precision, intent(in) :: Sigma(nrad_max)
     double precision, intent(in) :: dt
-    double precision, intent(out), allocatable :: values_J(:)
-    integer, intent(out), allocatable :: rowind_J(:), colptr_J(:)
+    double precision, intent(out), allocatable :: values_J_out(:)
+    integer, intent(out), allocatable :: rowind_J_out(:) 
+    integer, intent(out) ::  colptr_J_out(nrad_max *(Nm_s+1)+1)
     ! Local variables for the Jacobian construction
     integer, parameter :: N_tot = int(nrad_max*Nm_s)
     double precision, dimension(nrad_max) :: A,B,C
@@ -442,42 +459,53 @@ subroutine Y_jacobian(area,R,Ri,Sigma,dt,values_J,rowind_J,colptr_J)
     integer, dimension(3) :: row_in,col_in,row_out,col_out
     integer :: col_diag(nrad_max*nm_s+nrad_max),row_diag(nrad_max*nm_s+nrad_max)
     double precision :: dat_diag(nrad_max*nm_s+nrad_max)
-    integer :: i,k,nnz_diag
+    integer :: i,k,nnz_diag,nzz_new
     logical :: found
 
     double precision, allocatable :: dat_J(:),dat_total(:),dat_hydro(:)
     integer, allocatable :: row_J(:), col_J(:),row_total(:), col_total(:),row_hydro(:), col_hydro(:)
+    double precision, allocatable :: values_J(:)
+    integer, allocatable :: rowind_J(:)
+    integer :: colptr_J(3*Nrad_max+1)
+  
+  
 
     !get base JAcobian
+    print *, "calling jacobian"
+    print *, "convert re jac",allocated(values_J_out),allocated(values_J)
     call Jacobian(Sigma,R,Ri,area,dt,dat_J,row_J,col_J)
-
-    call jacobian_hydrodynamic_generator(area,D_tri(:,3),R,Ri,Sigma,v_rad_tri(:,3),A,B,C,nrad_max,Nm_s)
-
-    dat_hydro = [A(2:nrad_max), B, C(1:nrad_max-1)]
+    print *, "convert jac",allocated(values_J_out),allocated(values_J)
+    print *, "calling jac_hyd_smax", shape(area),shape(D_tri(:,3)),v_rad_tri(2,3),shape(A),shape(Ri)
+    call jacobian_hydrodynamic_generator(area,D_tri(:,3),R,Ri,Sigma,v_rad_tri(:,3),A,B,C,nrad_max,1)
+    print *, "convert hdy jac",allocated(values_J_out),allocated(values_J)
+    dat_hydro = [A(2:nrad_max), B(:), C(1:nrad_max-1)]
     row_hydro = [(i+1, i=1,nrad_max-1), (i, i=1,nrad_max), (i, i=1,nrad_max-1)] + N_tot
     col_hydro = [(i, i=1,nrad_max-1), (i, i=1,nrad_max), (i+1, i=1,nrad_max-1)] + N_tot
 
+    print *, size(dat_hydro),size(dat_J)
     !boudary arrays
     row_in = 1 + N_tot
     col_in = [(i, i=1,3)] + N_tot
     dat_in = 0.0d0
-    row_out = nrad_max-1 + N_tot
+    row_out = nrad_max + N_tot
     col_out = [(nrad_max-3+i, i=1,3)] + N_tot
     dat_out = 0.0d0
-
+    
     dat_total = [dat_J,dat_hydro, dat_in, dat_out]
     row_total = [row_J,row_hydro, row_in, row_out]
     col_total = [col_J,col_hydro, col_in, col_out]
+    print *, size(dat_total)
     deallocate(dat_J, row_J, col_J, dat_hydro, row_hydro, col_hydro)
 
 
+    dat_total = dat_total*(-dt)
     ! make the actual integration matrix by subtracting eye *dt 
     nnz_diag = 0
     do i = 1, Nrad_max*Nm_s+nrad_max
         found = .false.
         do k = 1, size(dat_total)
             if (row_total(k) == i .and. col_total(k) == i) then
-                dat_total(k) = dat_total(k) - dt
+                dat_total(k) = 1 - dat_total(k) 
                 found = .true.
                 exit
             end if
@@ -496,15 +524,17 @@ subroutine Y_jacobian(area,R,Ri,Sigma,dt,values_J,rowind_J,colptr_J)
         row_total = [row_total, row_diag(1:nnz_diag)]
         col_total = [col_total, col_diag(1:nnz_diag)]
     end if
+    print *, size(dat_total)
 
-    allocate(values_J(SIZE(dat_total)), rowind_J(SIZE(dat_total)), colptr_J(N_tot+nrad_max+1))
-    call triplet_to_csc(N_tot+nrad_max, SIZE(dat_total), row_total, col_total, dat_total, &
-                        colptr_J, rowind_J, values_J)
+    !allocate(values_J(SIZE(dat_total)), rowind_J(SIZE(dat_total)), colptr_J(N_tot+nrad_max+1))
 
-    !set the boundary conditions in the rhs vector preliminarary -> only value is implmeneted at the moment 
-    rhs(N_tot+1)=inner_s_bc
-    rhs(N_tot+nrad_max)=outer_s_bc
 
+    call coo_to_csc(N_tot+nrad_max,N_tot+nrad_max, SIZE(dat_total), dat_total,row_total, col_total,&
+                        colptr_J_out, rowind_J_out, values_J_out,nzz_new)
+    rhs(N_tot+1)=inner_s_bc*inner_bc(2)
+    rhs(N_tot+nrad_max)=outer_s_bc*outer_bc(2)
+    deallocate(dat_total,row_total,col_total)
+    !print *, "end_of Y"
 
 
 
@@ -521,15 +551,22 @@ subroutine integrate_dust(area,R,Ri,Sigma,dt)
     double precision, intent(in) :: dt
 
     double precision, allocatable :: values_J(:)
-    integer, allocatable :: rowind_J(:), colptr_J(:)    
+    integer, allocatable :: rowind_J(:)
+    integer ::  colptr_J(nrad_max*(Nm_s+1)+1)    
+
+
     call Y_jacobian(area,R,Ri,Sigma,dt,values_J,rowind_J,colptr_J)
-
+    print * , "line 1 " ,size(values_J(:5))
+    !print *, "calling 1dsa", rhs(1:nrad_max*Nm_s) + dt * reshape(transpose(S_rhs), [nrad_max*Nm_s])
     !implement the S coag source for the rhs term should work without though
-    rhs(1:nrad_max*Nm_s) = rhs(1:nrad_max*Nm_s) + dt * reshape(transpose(S_rhs), [nrad_max*Nm_s])
-    rhs((nrad_max*Nm_s)+1:(nrad_max*Nm_s)+nrad_max) = rhs((nrad_max*Nm_s)+1:(nrad_max*Nm_s)+nrad_max) + dt * ((deriv_s_max*Sig_tri(:,2))+(a_max_tri*(S_rhs(:,2)+S_coag_tri(:,2))))
-
+    !rhs(1:nrad_max*Nm_s) = rhs(1:nrad_max*Nm_s) + dt * reshape(transpose(S_rhs), [nrad_max*Nm_s])
+    print * , "line 1 " 
+    !rhs((nrad_max*Nm_s)+1:(nrad_max*Nm_s)+nrad_max) = rhs((nrad_max*Nm_s)+1:(nrad_max*Nm_s)+nrad_max) + dt * ((deriv_s_max*Sig_tri(:,2))+(a_max_tri*(S_rhs(:,2)+S_coag_tri(:,2))))
+    print *, "calling superlu"
     call solve_superlu(SIZE(values_J), 1, values_J, rowind_J, colptr_J, rhs)
-    deallocate(values_J, rowind_J, colptr_J)
+    print *, "dealovate arrays"
+    deallocate(values_J, rowind_J)
+    print *, "finalizer"
     call finalize_integration()
     
 end subroutine integrate_dust
