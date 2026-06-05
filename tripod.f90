@@ -320,7 +320,7 @@ subroutine update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     !print *, "vrad."
     !secoind argument is nu 
     call v_visc(Sigma,alpha_rad_tri*cs*H_gas,R,Ri_tri,v_gas,nrad_max)
-    v_gas = 0d0
+    !v_gas = 0d0
     !second argument is vdieftmax
     call vrad(St_tri*f_drift, -eta*R*OmegaK,v_gas, v_rad_tri, nrad_max, Nm_l)
     call vrad(St_tri, -eta*R*OmegaK,v_gas, v_rad_vrel, nrad_max, Nm_l)
