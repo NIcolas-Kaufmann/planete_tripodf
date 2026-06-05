@@ -62,19 +62,18 @@ program main
     do while(.true.)
         print *, "update",time/an
         call update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
-        print *,"wub",deriv_s_max(:5)
         if(any(abs(snaps-time) .lt. epsilon(time)))then 
             print *, "write at",time/an
             call write_output(time,i_output)
         endif 
-        print *, "calc_ts",time/an
+        !print *, "calc_ts",time/an
         call calc_ts_tri(timestep)
         call limit_ts_to_snaps(time,timestep,timestep_lim,snaps,nsnaps)
         !timestep_lim = timestep_lim * cfl
         print *, "integrate_dust",time/an,timestep_lim/an, timestep/an
-        !timestep_lim = 1e-1 *an
+        !timestep_lim = min(timestep_lim,25d0*an)
         call  integrate_dust(area,R,Ri_tri,Sigma,timestep_lim)
-        print *,"wub",deriv_s_max(:5)
+        !print *,"wub",deriv_s_max(:5)
         time = time + timestep_lim
         i_ts = i_ts +1 
         if(.True.)then 
