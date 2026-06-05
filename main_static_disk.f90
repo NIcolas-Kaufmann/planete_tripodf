@@ -31,7 +31,8 @@ program main
     !Timestep and snapshot variables
     integer, parameter :: nsnaps = 100
     double precision,parameter :: t_min = 1d2
-    double precision,parameter :: t_max = 1d5
+    double precision,parameter :: t_max = 2d5
+    double precision, parameter :: cfl = 1d-1
 
     real(8) :: snaps(nsnaps)
     integer :: i_output, i_ts
@@ -69,14 +70,15 @@ program main
         print *, "calc_ts",time/an
         call calc_ts_tri(timestep)
         call limit_ts_to_snaps(time,timestep,timestep_lim,snaps,nsnaps)
+        !timestep_lim = timestep_lim * cfl
         print *, "integrate_dust",time/an,timestep_lim/an, timestep/an
-        timestep_lim = 1e-1 *an
+        !timestep_lim = 1e-1 *an
         call  integrate_dust(area,R,Ri_tri,Sigma,timestep_lim)
         print *,"wub",deriv_s_max(:5)
         time = time + timestep_lim
         i_ts = i_ts +1 
         if(.True.)then 
-            if(time > 1e2*an .or. .false.)then 
+            if(time > 1e5*an .or. .false.)then 
                 call write_output(time,i_output)
                 stop
             endif

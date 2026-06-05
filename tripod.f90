@@ -15,6 +15,7 @@ module tripod
     double precision, parameter :: a_lim = 1e-4 ! minimal shrikage size in cm
     double precision, parameter :: f_drift = 0.8
     double precision, parameter,dimension(nrad_max,Nm_s) :: Sig_floor_tri = 1e-10 ! g/cm^2, floor for the surface density of the dust in each bin to avoid numerical issues, this can be adjusted as needed
+    double precision, parameter :: cfl_tri = 1d-1
 
 
 
@@ -65,8 +66,12 @@ module tripod
 
 
     !boundary conditions
+    character(len=*),parameter ::bd_inner_type = "const_grad"
+    character(len=*),parameter :: bd_outer_type = "val"
     double precision, dimension(Nm_s) :: inner_bc = [1e-5, 1e-5] ! small non-zero values to avoid numerical issues, these can be adjusted as needed
     double precision, dimension(Nm_s) :: outer_bc = [1e-11, 1e-11]
+
+    character(len=*),parameter :: s_bd_inner_type = "const_grad"
     double precision,parameter :: inner_s_bc = 1e-4
     double precision,parameter :: outer_s_bc = 7.8431328811173312E-005
 
@@ -396,6 +401,7 @@ subroutine Jacobian(Sigma,R,Ri,area,dt,dat_tot,row_tot,col_tot)
     integer, parameter :: n_dat_tot = (nrad_max-2)*Nm_s*Nm_s 
     integer, parameter :: N_tot = int(nrad_max*Nm_s)
     double precision :: dat_in(Nm_s*3),dat_out(Nm_s*3)
+    double precision :: Di,K1,K2
     integer :: row_in(Nm_s*3), col_in(Nm_s*3), row_out(Nm_s*3), col_out(Nm_s*3)
 
     double precision, allocatable :: dat_hydro(:)
@@ -430,8 +436,18 @@ subroutine Jacobian(Sigma,R,Ri,area,dt,dat_tot,row_tot,col_tot)
     dat_out = 0.0d0
     !todo Implement boundaries
     !val
-    rhs(1:nm_s) = inner_bc
+    if(bd_inner_type .eq. "val")then
+      rhs(1:nm_s) = inner_bc
+    elseif(bd_inner_type .eq. "const_grad")then 
+      Di = ri(2) / ri(3) * (r(2)- r(1)) / (r(3) - r(1))
+      K1 = - r(2) / r(1) * (1. + Di)
+      K2 = r(3) / r(1) * Di
+      dat_in(Nm_s+1:2*Nm_s) = -K1/dt
+      dat_in(2*Nm_s+1:) = -K2/dt
+      rhs(:Nm_s) = 0
+    endif 
     rhs(N_tot-Nm_s+1:N_tot) = outer_bc
+
 
     dat_tot = [dat_hydro, dat_coag,dat_in, dat_out]
     row_tot = [row_hydro, row_coag, row_in, row_out]
@@ -465,6 +481,7 @@ subroutine Y_jacobian(area,R,Ri,Sigma,dt,values_J_out,rowind_J_out,colptr_J_out)
     integer, dimension(3) :: row_in,col_in,row_out,col_out
     integer :: col_diag(nrad_max*nm_s+nrad_max),row_diag(nrad_max*nm_s+nrad_max)
     double precision :: dat_diag(nrad_max*nm_s+nrad_max)
+    double precision :: Di,K1,K2
     integer :: i,k,nnz_diag,nzz_new
     logical :: found
 
@@ -496,6 +513,21 @@ subroutine Y_jacobian(area,R,Ri,Sigma,dt,values_J_out,rowind_J_out,colptr_J_out)
     row_out = nrad_max + N_tot
     col_out = [(nrad_max-3+i, i=1,3)] + N_tot
     dat_out = 0.0d0
+
+    !set smax voundaries here 
+    print *, "look here",s_bd_inner_type 
+    if (s_bd_inner_type .eq. "val") then
+      rhs(N_tot+1) = inner_s_bc*inner_bc(2)
+    elseif(s_bd_inner_type .eq. "const_grad")then
+      print *, "ping --------------------"
+      Di = ri(2) / ri(3) * (r(2)- r(1)) / (r(3) - r(1))
+      K1 = - r(2) / r(1) * (1. + Di)
+      K2 = r(3) / r(1) * Di
+      dat_in(2) = -K1/dt
+      dat_in(3) = -K2/dt
+      rhs(N_tot+1) = 0
+    endif 
+    rhs(N_tot+nrad_max)=outer_s_bc*outer_bc(2)
     
     dat_total = [dat_J,dat_hydro, dat_in, dat_out]
     row_total = [row_J,row_hydro, row_in, row_out]
@@ -538,8 +570,7 @@ subroutine Y_jacobian(area,R,Ri,Sigma,dt,values_J_out,rowind_J_out,colptr_J_out)
 
     call coo_to_csc(N_tot+nrad_max,N_tot+nrad_max, SIZE(dat_total), dat_total,row_total, col_total,&
                         colptr_J_out, rowind_J_out, values_J_out,nzz_new)
-    rhs(N_tot+1)=inner_s_bc*inner_bc(2)
-    rhs(N_tot+nrad_max)=outer_s_bc*outer_bc(2)
+
     deallocate(dat_total,row_total,col_total)
     !print *, "end_of Y"
 
@@ -567,7 +598,7 @@ subroutine integrate_dust(area,R,Ri,Sigma,dt)
     !print *, "calling 1dsa", rhs(1:nrad_max*Nm_s) + dt * reshape(transpose(S_rhs), [nrad_max*Nm_s])
     !implement the S coag source for the rhs term should work without though
     rhs(1:nrad_max*Nm_s) = rhs(1:nrad_max*Nm_s) + dt * reshape(transpose(S_rhs), [nrad_max*Nm_s])
-    rhs((nrad_max*Nm_s)+1:(nrad_max*Nm_s)+nrad_max) = rhs((nrad_max*Nm_s)+1:(nrad_max*Nm_s)+nrad_max) + dt * ((deriv_s_max*Sig_tri(:,2))+(a_max_tri*(S_rhs(:,2)+S_coag_tri(:,2))))
+    rhs((nrad_max*Nm_s)+2:(nrad_max*Nm_s)+nrad_max-1) = rhs((nrad_max*Nm_s)+2:(nrad_max*Nm_s)+nrad_max-1) + dt * ((deriv_s_max(2:nrad_max-1)*Sig_tri(2:nrad_max-1,2))+(a_max_tri(2:nrad_max-1)*(S_rhs(2:nrad_max-1,2)+S_coag_tri(2:nrad_max-1,2))))
     print *, "calling superlu", rhs(nrad_max*Nm_s -6 : nrad_max*Nm_s+2)
     call print_csc_subblock(nrad_max*Nm_s-2*Nm_s,nrad_max*Nm_s,nrad_max*Nm_s-2*Nm_s,nrad_max*Nm_s,size(values_J),colptr_J,rowind_J,values_J)
     call solve_superlu(SIZE(values_J), 1, values_J, rowind_J, colptr_J, rhs)
@@ -852,7 +883,7 @@ subroutine calc_ts_tri(dt)
     call calc_dt_Sigma(dt_sig)
     call calc_dt_smax(dt_smax)
 
-    dt = min(dt_sig,dt_smax)
+    dt = min(dt_sig,dt_smax) *cfl_tri
 end subroutine calc_ts_tri
 
 
