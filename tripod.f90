@@ -6,7 +6,7 @@ module tripod
     integer, parameter :: Nm_l = 5
     integer, parameter :: Nm_s = 2
     double precision, parameter :: f_fudge = 0.4
-    double precision,dimension(nrad_max), parameter :: v_frag = 1.0d2 ! cm/s, fragmentation velocity
+    double precision,dimension(nrad_max), parameter :: v_frag = 1.0d3 ! cm/s, fragmentation velocity
     double precision, parameter :: q_turb1 = -3.5 ! power law index for the turbulent relative velocity distribution
     double precision, parameter :: q_turb2 = -3.75 ! power law index
     double precision, parameter :: q_drfr = -3.75 ! power law index for the radial drift relative velocity distribution
@@ -15,7 +15,7 @@ module tripod
     double precision, parameter :: a_lim = 1e-4 ! minimal shrikage size in cm
     double precision, parameter :: f_drift = 0.8
     double precision, parameter,dimension(nrad_max,Nm_s) :: Sig_floor_tri = 1e-10 ! g/cm^2, floor for the surface density of the dust in each bin to avoid numerical issues, this can be adjusted as needed
-    double precision, parameter :: cfl_tri = 1d-2
+    double precision, parameter :: cfl_tri = 1d-1
 
 
 
@@ -74,6 +74,9 @@ module tripod
     character(len=*),parameter :: s_bd_inner_type = "const_grad"
     double precision,parameter :: inner_s_bc = 1e-4
     double precision,parameter :: outer_s_bc = 7.8431328811173312E-005
+
+    !output name
+    character(len=*),parameter :: outfile_name = "gap"
 
     !grid_stuff 
     double precision, dimension(nrad_max+1) :: Ri_tri
@@ -320,7 +323,7 @@ subroutine update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     !print *, "vrad."
     !secoind argument is nu 
     call v_visc(Sigma,alpha_rad_tri*cs*H_gas,R,Ri_tri,v_gas,nrad_max)
-    !v_gas = 0d0
+    v_gas = 0d0
     !second argument is vdieftmax
     call vrad(St_tri*f_drift, -eta*R*OmegaK,v_gas, v_rad_tri, nrad_max, Nm_l)
     call vrad(St_tri, -eta*R*OmegaK,v_gas, v_rad_vrel, nrad_max, Nm_l)
@@ -356,7 +359,7 @@ subroutine update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     rhs((nrad_max*Nm_s)+1:(nrad_max*Nm_s)+nrad_max) = a_max_tri*Sig_tri(:,2)
     !print *, "rhs ", rhs((nrad_max*Nm_s)+nrad_max)
     !print *,"vrel", v_rel_tot_tri(:5,4,5),v_rel_azi_tri(:5,4,5),v_rel_rad_tri(:5,4,5),v_rel_turb_tri(:5,4,5),v_rel_vert_tri(:5,4,5),v_rel_brown_tri(:5,4,5)
-    call smax_deriv(v_rel_tot_tri(:,4,5),rho_tri(:,2),rhos_tri(:,1), a_min_tri, a_max_tri,v_frag,Sig_tri,Sig_floor_tri,deriv_s_max,nrad_max,Nm_s)
+    call smax_deriv(v_rel_tot_tri(:,4,5),rho_tri(:,2),rhos_tri(:,3), a_min_tri, a_max_tri,v_frag,Sig_tri,Sig_floor_tri,deriv_s_max,nrad_max,Nm_s)
     S_rhs = 0.0d0
     !print *, " scoag"
     call s_coag(pi*(a_tri(:,[1,3])+a_tri(:,[3,2]))**2d0,v_rel_tot_tri(:,[1,3],[3,2]),H_tri(:,[1,3]),m_tri(:,[1,3]),Sig_tri,a_min_tri,a_max_tri,q_eff_tri,Sig_floor_tri,S_coag_tri,nrad_max,Nm_s)
@@ -370,6 +373,7 @@ subroutine update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     S_tot_tri = S_coag_tri + S_hyd_tri
     call def_smax_hyd(smax_dot_hyd,Sigma,cs,R,Ri_tri)
     !print * ,"update complete"
+    call enforce_f()
     !write(*,*) "test_quantity",Ri_tri(:10)
     !print *, "gas Sigma", Sigma(nrad_max-3:)
     !print *, "gas eta ", eta(nrad_max-3:)
@@ -830,18 +834,23 @@ end subroutine triplet_to_csc
 
 subroutine enforce_f()
 double precision,dimension(nrad_max) :: delta 
+double precision, dimension(nrad_max) :: dadsig1
 integer :: i
 
 delta = f_crit*sum(Sig_tri,dim=2) -Sig_tri(:,2)
 do i = 1, nrad_max
-    if(delta(i)>0)then
-      print *, "enforce_f at", ri_tri(i)/au
-      stop
-    endif 
     delta(i) = max(0.0d0, delta(i))
 end do
+call dadsig(a_lim,q_rec,f_crit,a_max_tri,a_min_tri,Sig_tri,dadsig1,nrad_max,Nm_s)
 Sig_tri(:,2) = Sig_tri(:,2) + delta
 Sig_tri(:,1) = Sig_tri(:,1) - delta
+
+do i = 1, nrad_max
+  a_max_tri(i) = max(a_lim,a_max_tri(i) + delta(i)*dadsig1(i))
+enddo 
+
+call calc_q_rec(Sig_tri,a_min_tri,a_max_tri,q_rec,nrad_max)
+
 end subroutine enforce_f
 
 
@@ -852,7 +861,7 @@ subroutine write_output(t,i_output)
     
     integer :: i
 
-    call OPEN_OUTPUT_FILE(5200+i_output, 1, .True., .false., "tri", 4, i_output)
+    call OPEN_OUTPUT_FILE(5200+i_output, 1, .True., .false., outfile_name, 4, i_output)
     ! This subroutine should handle all the output writing, for example writing the dust surface density and maximum grain size to files for post-processing and visualization. The implementation can be adjusted as needed, for example by using different file formats or adding more output variables.
     do i = 1, nrad_max
         write(5200+i_output,*) &
@@ -973,7 +982,7 @@ subroutine calc_dt_Sigma(dt_out)
     if (Sigma_sum > 0.0d0) then
       f = Sig_tri(i, 2) / Sigma_sum
     else
-      f = 0.0d0
+      f = 1.0d0
     end if
 
     mask2(i) = ( S_tot_tri(i, 2) * Sig_tri(i, 1) - S_tot_tri(i, 1) * Sig_tri(i, 2) < 0.0d0 ) &
@@ -1100,7 +1109,7 @@ subroutine calc_dt_smax(dt_out)
     end if
 
     mask2(i) = ( S_tot_tri(i, 2) * Sig_tri(i, 1) - S_tot_tri(i, 1) * Sig_tri(i, 2) < 0.0d0 ) &
-               .and. ( f < f_crit )
+               .and. ( f < 0.43 )
   end do
 
   ! ----------------------------------------------------------------
