@@ -6,7 +6,7 @@ module tripod
     integer, parameter :: Nm_l = 5
     integer, parameter :: Nm_s = 2
     double precision, parameter :: f_fudge = 0.4
-    double precision,dimension(nrad_max), parameter :: v_frag = 1.0d3 ! cm/s, fragmentation velocity
+    double precision,dimension(nrad_max), parameter :: v_frag = 1.0d2 ! cm/s, fragmentation velocity
     double precision, parameter :: q_turb1 = -3.5 ! power law index for the turbulent relative velocity distribution
     double precision, parameter :: q_turb2 = -3.75 ! power law index
     double precision, parameter :: q_drfr = -3.75 ! power law index for the radial drift relative velocity distribution
@@ -66,12 +66,12 @@ module tripod
 
 
     !boundary conditions
-    character(len=*),parameter ::bd_inner_type = "const_grad"
+    character(len=*),parameter ::bd_inner_type = "val"
     character(len=*),parameter :: bd_outer_type = "val"
-    double precision, dimension(Nm_s) :: inner_bc = [1e-5, 1e-5] ! small non-zero values to avoid numerical issues, these can be adjusted as needed
+    double precision, dimension(Nm_s) :: inner_bc = [1e-11, 1e-11] ! small non-zero values to avoid numerical issues, these can be adjusted as needed
     double precision, dimension(Nm_s) :: outer_bc = [1e-11, 1e-11]
 
-    character(len=*),parameter :: s_bd_inner_type = "const_grad"
+    character(len=*),parameter :: s_bd_inner_type = "val"
     double precision,parameter :: inner_s_bc = 1e-4
     double precision,parameter :: outer_s_bc = 7.8431328811173312E-005
 
@@ -162,7 +162,7 @@ subroutine initialize_dust(a_min_ini,a_max_ini,alpha_rad,alpha_vert,alpha_turb,f
     call update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     print *, "setup boundaries"
     !set boundaries 
-    inner_bc = Sig_tri(2,:)
+    !inner_bc = Sig_tri(2,:)
     outer_bc = Sig_tri(nrad_max-1,:)
     print *, "update_done."
 end subroutine initialize_dust
@@ -491,7 +491,7 @@ subroutine Y_jacobian(area,R,Ri,Sigma,dt,values_J_out,rowind_J_out,colptr_J_out)
   
 
     !get base JAcobian
-    print *, "calling jacobian"
+    !print *, "calling jacobian"
     !print *, "convert re jac",allocated(values_J_out),allocated(values_J)
     call Jacobian(Sigma,R,Ri,area,dt,dat_J,row_J,col_J)
     !print *, "convert jac",allocated(values_J_out),allocated(values_J)
@@ -861,7 +861,7 @@ subroutine write_output(t,i_output)
     
     integer :: i
 
-    call OPEN_OUTPUT_FILE(5200+i_output, 1, .True., .false., outfile_name, 4, i_output)
+    call OPEN_OUTPUT_FILE(5200+i_output, 1, .true., .false., outfile_name, 4, i_output)
     ! This subroutine should handle all the output writing, for example writing the dust surface density and maximum grain size to files for post-processing and visualization. The implementation can be adjusted as needed, for example by using different file formats or adding more output variables.
     do i = 1, nrad_max
         write(5200+i_output,*) &
@@ -871,7 +871,9 @@ subroutine write_output(t,i_output)
             Sig_tri(i,2),&
             a_max_tri(i),&
             q_rec(i),&
-            t
+            t,&
+            St_tri(i,5),&
+            v_rel_tot_tri(i,4,5)
     enddo 
     close(5200+i_output)
     i_output = i_output +1 
@@ -986,7 +988,7 @@ subroutine calc_dt_Sigma(dt_out)
     end if
 
     mask2(i) = ( S_tot_tri(i, 2) * Sig_tri(i, 1) - S_tot_tri(i, 1) * Sig_tri(i, 2) < 0.0d0 ) &
-               .and. ( f < 0.43d0 )
+               .and. ( f < 0.43d0 ) .and. a_max_tri(i) > a_lim
   end do
   ! Boundaries cannot be active
   mask2(1)  = .false.
@@ -1105,7 +1107,7 @@ subroutine calc_dt_smax(dt_out)
     if (Sigma_sum > 0.0d0) then
       f = Sig_tri(i, 2) / Sigma_sum
     else
-      f = 0.0d0
+      f = 1.0d0
     end if
 
     mask2(i) = ( S_tot_tri(i, 2) * Sig_tri(i, 1) - S_tot_tri(i, 1) * Sig_tri(i, 2) < 0.0d0 ) &
