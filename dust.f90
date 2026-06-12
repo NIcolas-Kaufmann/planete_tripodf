@@ -383,7 +383,7 @@ subroutine pfrag_trans( St_max, alpha, SigmaGas, mump, p_frag_trans, Nr)
     ! -------
     ! p_frag_trans(Nr) : Fragmentation power-law
     !
-    use constants, only : sigma_H2,pi
+    use constants, only : sigma_H2
     implicit none
 
     double precision, intent(in) :: St_max(Nr)
@@ -742,7 +742,6 @@ subroutine dadsig(alim, q,  f_crit, amax,amin, Sig, dadsig1, nr, nm)
     double precision :: Sig_crit(Nr)
     double precision :: Sig_tot(Nr)
     double precision :: dsig1dt(Nr)
-    double precision :: sdot_max(Nr)
     double precision :: xi(Nr)
     double precision :: dum1(Nr)
     double precision :: dsig1da(Nr)
@@ -805,8 +804,6 @@ subroutine dsigda(alim, q,  f_crit, amax,amin, Sig, dsig1da, nr, nm)
 
     double precision :: Sig_crit(Nr)
     double precision :: Sig_tot(Nr)
-    double precision :: dsig1dt(Nr)
-    double precision :: sdot_max(Nr)
     double precision :: xi(Nr)
     double precision :: dum1(Nr)
 

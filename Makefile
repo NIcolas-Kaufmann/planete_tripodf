@@ -10,7 +10,7 @@ SUPERLU_DIR = ../superlu/build
 SUPERLU_INC = -I$(SUPERLU_DIR)/SRC
 SUPERLULIB   	= $(SUPERLU_DIR)/SRC/libsuperlu.a
 
-LIBS = $(SUPERLULIB) /opt/homebrew/opt/openblas/lib/libopenblas.dylib -lm
+LIBS = $(SUPERLULIB) /opt/homebrew/opt/openblas/lib/libopenblas.dylib -lm -llapack
 # Source files
 SRCS = constants.f90 interpolation.f90 gas.f90 dust.f90 csc_builder.f90 tripod.f90 IO.f90 
 MAIN = main_test.f90

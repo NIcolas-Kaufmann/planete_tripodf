@@ -111,7 +111,7 @@ subroutine update_tripod(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas,dt,area,Ri)
     double precision, intent(in) :: area(nrad_max)
     double precision, intent(in) :: Ri(nrad_max+1)
     call update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
-    call integrate_dust(area,R,Ri,Sigma,dt)
+    call integrate_dust_lapack(area,R,Ri,Sigma,dt)
     
     !IO stuff
 
@@ -340,7 +340,6 @@ subroutine update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     call vrel_vertical_settling(H_tri, OmegaK, St_tri, v_rel_vert_tri, nrad_max, Nm_l)
     !print *, "vrel tot "
     v_rel_tot_tri = sqrt(v_rel_azi_tri**2 + v_rel_brown_tri**2 + v_rel_rad_tri**2 + v_rel_turb_tri**2 + v_rel_vert_tri**2)
-
     ! collision outcomes p and q 
     !print *, "pfrag "
     call pfrag(v_rel_tot_tri(:,4,5), v_frag, p_frag_tri, nrad_max, Nm_l)
@@ -372,6 +371,7 @@ subroutine update_dust(R,eta,T,mump,OmegaK,mfp,Sigma,cs,H_gas)
     call s_hyd(Fi_tot,Ri_tri,S_hyd_tri,nrad_max,Nm_s)
     S_tot_tri = S_coag_tri + S_hyd_tri
     call def_smax_hyd(smax_dot_hyd,Sigma,cs,R,Ri_tri)
+    call growth_fudge(OmegaK)
     !print * ,"update complete"
     call enforce_f()
     !write(*,*) "test_quantity",Ri_tri(:10)
@@ -401,7 +401,6 @@ subroutine Jacobian(Sigma,R,Ri,area,dt,dat_tot,row_tot,col_tot)
     double precision, dimension((nrad_max-2)*Nm_s*Nm_s) :: dat_coag 
     integer, dimension((nrad_max-2)*Nm_s*Nm_s) :: row_coag, col_coag
     double precision, dimension(nrad_max,Nm_s) :: cross_section_tri
-    integer, parameter :: n_dat_tot = (nrad_max-2)*Nm_s*Nm_s 
     integer, parameter :: N_tot = int(nrad_max*Nm_s)
     double precision :: dat_in(Nm_s*3),dat_out(Nm_s*3)
     double precision :: Di,K1,K2
@@ -484,9 +483,6 @@ subroutine Y_jacobian(area,R,Ri,Sigma,dt,values_J_out,rowind_J_out,colptr_J_out)
 
     double precision, allocatable :: dat_J(:),dat_total(:),dat_hydro(:)
     integer, allocatable :: row_J(:), col_J(:),row_total(:), col_total(:),row_hydro(:), col_hydro(:)
-    double precision, allocatable :: values_J(:)
-    integer, allocatable :: rowind_J(:)
-    integer :: colptr_J(3*Nrad_max+1)
   
   
 
@@ -605,6 +601,89 @@ subroutine integrate_dust(area,R,Ri,Sigma,dt)
     call finalize_integration()
     
 end subroutine integrate_dust
+
+
+subroutine integrate_dust_lapack(area,R,Ri,Sigma,dt)
+    implicit none
+
+    double precision, intent(in) :: area(nrad_max)
+    double precision, intent(in) :: R(nrad_max)
+    double precision, intent(in) :: Ri(nrad_max+1)
+    double precision, intent(in) :: Sigma(nrad_max)
+    double precision, intent(in) :: dt
+
+
+    integer, parameter :: LDAB = 3*Nm_s + 1
+    integer, parameter :: N_tot = int(nrad_max*Nm_s+nrad_max)
+    double precision :: Y_band(LDAB,N_tot)  
+    integer :: IPIV(nrad_max), info
+
+
+    call Y_jacobian_band(area,R,Ri,Sigma,dt,Y_band)
+
+    rhs(1:nrad_max*Nm_s) = rhs(1:nrad_max*Nm_s) + dt * reshape(transpose(S_rhs), [nrad_max*Nm_s])
+    rhs((nrad_max*Nm_s)+2:(nrad_max*Nm_s)+nrad_max-1) = rhs((nrad_max*Nm_s)+2:(nrad_max*Nm_s)+nrad_max-1) + dt * ((deriv_s_max(2:nrad_max-1)*Sig_tri(2:nrad_max-1,2))+(a_max_tri(2:nrad_max-1)*(S_rhs(2:nrad_max-1,2)+S_coag_tri(2:nrad_max-1,2))))
+    !print *, "calling dgbsv",dt
+    call dgbsv(N_tot, Nm_s,Nm_s, 1, Y_band, LDAB, IPIV, rhs, N_tot, info)
+    if (info /= 0) then
+        write(*,*) 'LAPACK dgbsv failed, info = ', info
+        stop
+    end if
+  
+    call finalize_integration()
+    
+end subroutine integrate_dust_lapack
+
+subroutine Y_jacobian_band(area,R,Ri,Sigma,dt,YJ_band)    
+  implicit none
+
+    double precision, intent(in) :: area(nrad_max)
+    double precision, intent(in) :: R(nrad_max)
+    double precision, intent(in) :: Ri(nrad_max+1)
+    double precision, intent(in) :: Sigma(nrad_max)
+    double precision, intent(in) :: dt
+    double precision, intent(out) :: YJ_band(3*Nm_s + 1, nrad_max*Nm_s+nrad_max)
+
+    ! Local variables for the Jacobian construction
+    integer, parameter :: KL = Nm_s
+    integer, parameter :: KU = Nm_s
+    integer, parameter :: N_tot = int(nrad_max*Nm_s)
+    double precision, dimension(nrad_max) :: A,B,C
+    double precision,allocatable :: dat_J(:)
+    integer,allocatable :: row_J(:), col_J(:)
+    integer :: p,i
+
+    YJ_band = 0.0d0
+
+    call Jacobian(Sigma,R,Ri,area,dt,dat_J,row_J,col_J)
+
+    do p = 1, size(dat_J)
+        i = row_J(p)
+        YJ_band(kl + ku + 1 + i - col_J(p), col_J(p)) = YJ_band(kl + ku + 1 + i - col_J(p), col_J(p)) + dat_J(p)
+    end do
+    deallocate(dat_J, row_J, col_J)
+    
+    call jacobian_hydrodynamic_generator(area,D_tri(:,3),R,Ri,Sigma,v_rad_tri(:,3),A,B,C,nrad_max,1)
+
+    do p = 2, nrad_max
+        YJ_band(2*KL+2, nrad_max*nm_s+p) = A(p)
+        YJ_band(2*KL+1, nrad_max*nm_s+p) = B(p)
+        YJ_band(2*KL, nrad_max*nm_s+p) = C(p-1)
+    end do
+    YJ_band(2*KL+1, nrad_max*nm_s+1) = B(1)
+
+    !set smax voundaries here 
+    !print *, "look here",s_bd_inner_type 
+    if (s_bd_inner_type .eq. "val") then
+      rhs(N_tot+1) = inner_s_bc*inner_bc(2)
+    endif 
+    rhs(N_tot+nrad_max)=outer_s_bc*outer_bc(2)
+
+    YJ_band = YJ_band*(-dt)
+
+    YJ_band(2*KL+1,:) = YJ_band(2*KL+1,:) +1d0
+end subroutine Y_jacobian_band
+
 
 
 subroutine solve_superlu(nzz_max,nrhs,values,rowind,colptr,b)
@@ -1281,5 +1360,34 @@ subroutine print_csc_subblock(row_start, row_end, col_start, col_end, &
 
   deallocate(dense)
 end subroutine
+
+
+subroutine growth_fudge(OmegaK)
+    implicit none
+
+    double precision, intent(in) :: OmegaK(nrad_max)
+    ! This subroutine can be used to apply any "fudge factors" to the growth rates or surface densities to enforce certain conditions or to stabilize the integration. For example, it could be used to limit the maximum growth rate or to prevent the surface density from dropping below a certain threshold. The implementation can be adjusted as needed based on the specific requirements of the simulation.
+    logical,dimension(nrad_max) :: growth_fudge_mask
+    integer :: i,i_min
+    double precision :: growth_fudge_factor
+    double precision, parameter :: r_min = 1*au
+
+    i_min = MINloc(abs(Ri_tri - r_min), dim=1)
+
+    do i = 1, nrad_max
+      growth_fudge_mask(i) = abs(v_rel_tot_tri(i,4,5) - v_frag(i))/v_frag(i) < 0.05d0
+    enddo 
+
+    do i = 1, i_min
+      if (growth_fudge_mask(i)) then
+        growth_fudge_factor = OmegaK(i_min)/OmegaK(i)
+        deriv_s_max(i) = deriv_s_max(i) * growth_fudge_factor
+        smax_dot_hyd(i) = smax_dot_hyd(i) * growth_fudge_factor
+      end if
+    end do
+
+
+    
+end subroutine growth_fudge
 
 end module tripod
